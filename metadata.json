@@ -1,0 +1,6 @@
+{
+  "name": "OHPEA Backend API & Portal",
+  "description": "REST API backend, database, and member management system for the Oromia Hospitality & Tourism Professionals Association.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
