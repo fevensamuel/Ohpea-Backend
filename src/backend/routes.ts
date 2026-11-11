@@ -1,8 +1,3 @@
-/**
- * OHPEA REST API Routes
- * Implements Auth, Public, Admin Member Management, Payments, Content CMS, SMS, and Dashboard endpoints.
- */
-
 import express, { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -1309,39 +1304,36 @@ apiRouter.get(
   '/admin/payments/unpaid',
   adminAuthChain,
   requirePermission('payments'),
-  requireRegionScope,
   async (req: Request, res: Response) => {
     const period = (req.query.period as string) || 'monthly';
     const targetDate = (req.query.date as string) || new Date().toISOString().split('T')[0];
-
     const d = new Date(targetDate);
-    let start = targetDate;
-    if (period === 'monthly') {
-      start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-    }
+    const start = period === 'monthly'
+      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+      : targetDate;
 
     const regionCond = req.query.regionId ? 'AND m.region_id = $2' : '';
     const params = req.query.regionId ? [start, req.query.regionId] : [start];
 
-    const resUnpaid = await query(
-      `SELECT m.id, m.member_no, m.full_name, m.phone, m.email, m.region_id, r.name as region_name
+    const result = await query(
+      `SELECT m.id, m.member_no, m.full_name, m.phone, m.email, m.region_id,
+              m.sector_id, m.last_payment_date, m.last_payment_amount,
+              r.name as region_name, s.label as sector_label
        FROM members m
        LEFT JOIN regions r ON m.region_id = r.id
+       LEFT JOIN lookup_sectors s ON m.sector_id = s.id
        WHERE m.membership_status IN ('active', 'pending')
        ${regionCond}
        AND NOT EXISTS (
-         SELECT 1 FROM payments p 
+         SELECT 1 FROM payments p
          WHERE p.member_id = m.id AND p.status = 'paid' AND p.period_start = $1
        )
-       ORDER BY m.full_name ASC`,
+       ORDER BY m.full_name ASC
+       LIMIT 500`,
       params
     );
 
-    return res.json({
-      success: true,
-      data: resUnpaid.rows.map(mapRow),
-      meta: { totalUnpaid: resUnpaid.rows.length },
-    });
+    return res.json({ success: true, data: result.rows.map(mapRow) });
   }
 );
 
