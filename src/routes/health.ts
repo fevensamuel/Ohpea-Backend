@@ -13,13 +13,14 @@ healthRouter.get('/health', async (_req: Request, res: Response) => {
     dbOk = false;
   }
 
+  const status = dbOk ? 'healthy' : 'degraded';
   const payload = {
-    status: dbOk ? 'ok' : 'degraded',
+    status,
     uptimeSeconds: Math.floor(process.uptime()),
     db: dbOk ? 'ok' : 'unreachable',
     timestamp: new Date().toISOString(),
     latencyMs: Date.now() - startedAt,
   };
 
-  res.status(dbOk ? 200 : 503).json({ success: dbOk, data: payload });
+  res.status(dbOk ? 200 : 503).json({ success: dbOk, status, data: payload });
 });

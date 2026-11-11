@@ -1420,6 +1420,308 @@ apiRouter.get('/admin/subscribers', adminAuthChain, requirePermission('subscribe
 });
 
 /* ==========================================================================
+   6. ADMIN: CONTENT CMS (Programs, Objectives, Partners, Activities, Settings, Regions, Lookups)
+   ========================================================================== */
+
+// Programs CRUD
+apiRouter.get('/admin/programs', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const result = await query('SELECT * FROM programs ORDER BY COALESCE(order_index, sort_order, 0) ASC');
+  return res.json({ success: true, data: result.rows.map(mapRow) });
+});
+
+apiRouter.post('/admin/programs', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const id = crypto.randomUUID();
+  const slug = (b.slug || b.title?.en || `program-${Date.now()}`).toString().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  const ins = await query(
+    `INSERT INTO programs (id, slug, icon, title, summary, body, sort_order, is_active, is_published)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [
+      id,
+      slug,
+      b.iconUrl || b.icon_url || 'Circle',
+      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
+      JSON.stringify(b.summary && typeof b.summary === 'object' ? b.summary : { en: b.summary || '' }),
+      JSON.stringify(b.body && typeof b.body === 'object' ? b.body : { en: b.body || '' }),
+      b.sortOrder ?? 0,
+      b.isActive ?? true,
+      b.isPublished ?? true,
+    ]
+  );
+  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
+});
+
+apiRouter.put('/admin/programs/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const up = await query(
+    `UPDATE programs
+     SET title = $1,
+         summary = $2,
+         body = $3,
+         icon = $4,
+         sort_order = $5,
+         is_active = $6,
+         is_published = COALESCE($7, is_published)
+     WHERE id = $8 RETURNING *`,
+    [
+      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
+      JSON.stringify(b.summary && typeof b.summary === 'object' ? b.summary : { en: b.summary || '' }),
+      JSON.stringify(b.body && typeof b.body === 'object' ? b.body : { en: b.body || '' }),
+      b.iconUrl || b.icon_url || 'Circle',
+      b.sortOrder ?? 0,
+      b.isActive ?? true,
+      b.isPublished ?? null,
+      req.params.id,
+    ]
+  );
+  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: mapRow(up.rows[0]) });
+});
+
+apiRouter.delete('/admin/programs/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const del = await query('DELETE FROM programs WHERE id = $1 RETURNING *', [req.params.id]);
+  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: { deleted: true } });
+});
+
+// Objectives CRUD
+apiRouter.get('/admin/objectives', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const result = await query('SELECT * FROM objectives ORDER BY kind, sort_order');
+  return res.json({ success: true, data: result.rows.map(mapRow) });
+});
+
+apiRouter.post('/admin/objectives', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const id = crypto.randomUUID();
+  const ins = await query(
+    `INSERT INTO objectives (id, kind, title, description, sort_order)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [
+      id,
+      b.kind || 'general',
+      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
+      JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }),
+      b.sortOrder ?? 0,
+    ]
+  );
+  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
+});
+
+apiRouter.put('/admin/objectives/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const up = await query(
+    `UPDATE objectives
+     SET kind = COALESCE($1, kind),
+         title = COALESCE($2, title),
+         description = COALESCE($3, description),
+         sort_order = COALESCE($4, sort_order)
+     WHERE id = $5 RETURNING *`,
+    [
+      b.kind ?? null,
+      b.title ? JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }) : null,
+      b.description ? JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }) : null,
+      b.sortOrder ?? null,
+      req.params.id,
+    ]
+  );
+  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: mapRow(up.rows[0]) });
+});
+
+apiRouter.delete('/admin/objectives/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
+  const del = await query('DELETE FROM objectives WHERE id = $1 RETURNING *', [req.params.id]);
+  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: { deleted: true } });
+});
+
+// Partners CRUD
+apiRouter.get('/admin/partners', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
+  const result = await query('SELECT * FROM partners ORDER BY COALESCE(order_index, sort_order, 0) ASC, name ASC');
+  return res.json({ success: true, data: result.rows.map(mapRow) });
+});
+
+apiRouter.post('/admin/partners', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const id = crypto.randomUUID();
+  const ins = await query(
+    `INSERT INTO partners (id, name, website_url, logo_url, sort_order, is_active, is_published)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [
+      id,
+      b.name || '',
+      b.website || b.websiteUrl || null,
+      b.logoUrl || b.logo_url || null,
+      b.sortOrder ?? 0,
+      b.isActive ?? true,
+      b.isPublished ?? true,
+    ]
+  );
+  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
+});
+
+apiRouter.put('/admin/partners/:id', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const up = await query(
+    `UPDATE partners
+     SET name = COALESCE($1, name),
+         website_url = COALESCE($2, website_url),
+         logo_url = COALESCE($3, logo_url),
+         sort_order = COALESCE($4, sort_order),
+         is_active = COALESCE($5, is_active),
+         is_published = COALESCE($6, is_published)
+     WHERE id = $7 RETURNING *`,
+    [
+      b.name ?? null,
+      b.website ?? b.websiteUrl ?? null,
+      b.logoUrl ?? b.logo_url ?? null,
+      b.sortOrder ?? null,
+      b.isActive ?? null,
+      b.isPublished ?? null,
+      req.params.id,
+    ]
+  );
+  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: mapRow(up.rows[0]) });
+});
+
+apiRouter.delete('/admin/partners/:id', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
+  const del = await query('DELETE FROM partners WHERE id = $1 RETURNING *', [req.params.id]);
+  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: { deleted: true } });
+});
+
+// Activities CRUD
+apiRouter.get('/admin/activities', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
+  const result = await query('SELECT * FROM activities ORDER BY activity_date DESC');
+  return res.json({ success: true, data: result.rows.map(mapRow) });
+});
+
+apiRouter.post('/admin/activities', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const id = crypto.randomUUID();
+  const ins = await query(
+    `INSERT INTO activities (id, title, description, activity_date, image_url, is_public)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [
+      id,
+      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
+      JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }),
+      b.activityDate || null,
+      b.imageUrl || b.image_url || null,
+      b.isPublic ?? true,
+    ]
+  );
+  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
+});
+
+apiRouter.put('/admin/activities/:id', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const up = await query(
+    `UPDATE activities
+     SET title = COALESCE($1, title),
+         description = COALESCE($2, description),
+         activity_date = COALESCE($3, activity_date),
+         image_url = COALESCE($4, image_url),
+         is_public = COALESCE($5, is_public)
+     WHERE id = $6 RETURNING *`,
+    [
+      b.title ? JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }) : null,
+      b.description ? JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }) : null,
+      b.activityDate ?? null,
+      b.imageUrl ?? b.image_url ?? null,
+      b.isPublic ?? null,
+      req.params.id,
+    ]
+  );
+  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: mapRow(up.rows[0]) });
+});
+
+apiRouter.delete('/admin/activities/:id', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
+  const del = await query('DELETE FROM activities WHERE id = $1 RETURNING *', [req.params.id]);
+  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: { deleted: true } });
+});
+
+// Site settings
+apiRouter.get('/admin/settings/:key', adminAuthChain, requirePermission('settings.site'), async (req: Request, res: Response) => {
+  const result = await query('SELECT value FROM site_settings WHERE key = $1', [req.params.key]);
+  if (result.rows.length === 0) return res.json({ success: true, data: null });
+  return res.json({ success: true, data: result.rows[0].value });
+});
+
+apiRouter.put('/admin/settings/:key', adminAuthChain, requirePermission('settings.site'), async (req: Request, res: Response) => {
+  const raw = req.body;
+  const value = raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length === 1 && 'value' in raw ? raw.value : raw;
+  await query(
+    `INSERT INTO site_settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [req.params.key, JSON.stringify(value)]
+  );
+  return res.json({ success: true, data: value });
+});
+
+// Regions CRUD
+apiRouter.get('/admin/regions', adminAuthChain, requirePermission('regions'), async (req: Request, res: Response) => {
+  const result = await query(
+    `SELECT * FROM regions ORDER BY COALESCE(name->>'en', name->>'am', name->>'om', name::text) ASC`
+  );
+  return res.json({ success: true, data: result.rows.map(mapRow) });
+});
+
+apiRouter.post('/admin/regions', adminAuthChain, requirePermission('regions'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const id = crypto.randomUUID();
+  const ins = await query(
+    `INSERT INTO regions (id, name, parent_id, type, is_active, sort_order)
+     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+    [
+      id,
+      JSON.stringify(b.name && typeof b.name === 'object' ? b.name : { en: b.name || '' }),
+      b.parentId || b.parent_id || null,
+      b.type || 'region',
+      b.isActive ?? true,
+      b.sortOrder ?? 0,
+    ]
+  );
+  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
+});
+
+apiRouter.put('/admin/regions/:id', adminAuthChain, requirePermission('regions'), async (req: Request, res: Response) => {
+  const b = req.body;
+  const up = await query(
+    `UPDATE regions
+     SET name = COALESCE($1, name),
+         parent_id = COALESCE($2, parent_id),
+         type = COALESCE($3, type),
+         is_active = COALESCE($4, is_active)
+     WHERE id = $5 RETURNING *`,
+    [
+      b.name ? JSON.stringify(b.name && typeof b.name === 'object' ? b.name : { en: b.name || '' }) : null,
+      b.parentId ?? b.parent_id ?? null,
+      b.type ?? null,
+      b.isActive ?? null,
+      req.params.id,
+    ]
+  );
+  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
+  return res.json({ success: true, data: mapRow(up.rows[0]) });
+});
+
+// Lookups
+apiRouter.get('/admin/lookups/:type', adminAuthChain, requirePermission('lookups'), async (req: Request, res: Response) => {
+  const tableMap: Record<string, string> = {
+    sectors: 'lookup_sectors',
+    fields: 'lookup_fields_of_study',
+    'graduation-levels': 'lookup_graduation_levels',
+  };
+  const table = tableMap[req.params.type];
+  if (!table) return res.status(400).json({ success: false, error: 'Invalid lookup type' });
+  const result = await query(`SELECT * FROM ${table} WHERE is_active = true ORDER BY sort_order ASC`);
+  return res.json({ success: true, data: result.rows.map(mapRow) });
+});
+
+/* ==========================================================================
    7. ADMIN: SMS & COMMUNICATION (Phase 3)
    ========================================================================== */
 
