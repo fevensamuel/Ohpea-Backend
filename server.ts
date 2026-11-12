@@ -1,8 +1,3 @@
-/**
- * OHPEA Headless REST API Server Bootstrap
- * Oromia Hospitality & Tourism Professionals Association
- */
-
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
@@ -37,7 +32,8 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-const PORT = cliPort || 3000;
+const envPort = parseInt(process.env.PORT || '', 10);
+const PORT = cliPort || (Number.isFinite(envPort) && envPort > 0 ? envPort : 3000);
 const app = express();
 
 // CORS configuration (allow-list + localhost in dev)
