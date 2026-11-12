@@ -8,7 +8,7 @@
  * - POST /api/public/contact -> row appears in messages (via GET /api/admin/messages with admin JWT)
  * - POST /api/public/newsletter -> idempotent 200 (via GET /api/admin/subscribers with admin JWT)
  * - POST /api/public/registrations missing idDocument -> 400 with fields.idDocument
- * - OTP send -> verify happy path -> registrations.otpVerified === true & status === 'pending_review'
+ * - OTP verification does not change the member's pending registration status
  * - OTP verify wrong code 5x -> 400, attempts increment, 6th call blocked
  * - Every public GET returns { success: true, data } (and meta when paginated)
  */
@@ -218,8 +218,8 @@ async function runTests() {
     if (!json.fields?.idDocument) throw new Error('Expected fields.idDocument in error envelope');
   });
 
-  // Test 8: OTP send -> verify happy path -> status === 'pending_review'
-  await test('OTP send -> verify happy path -> status === "pending_review"', async () => {
+  // Test 8: Registration saves directly as a pending member; OTP leaves it pending
+  await test('Registration creates a pending member; OTP verification leaves it pending', async () => {
     const rand = Math.floor(Math.random() * 89999999 + 10000000);
     const phone = `+2519${rand}`;
 
@@ -228,6 +228,16 @@ async function runTests() {
     formData.append('fullName', 'Chala Tolessa Test');
     formData.append('phone', phone);
     formData.append('email', `chala.${rand}@example.com`);
+    formData.append('gender', 'male');
+    formData.append('membershipCategory', 'Professional');
+    formData.append('dateOfBirth', '1990-05-21');
+    formData.append('nationality', 'Ethiopian');
+    formData.append('emergencyContactName', 'Desta Tolessa');
+    formData.append('emergencyContactPhone', '+251911112233');
+    formData.append('businessTin', 'TIN-12345');
+    formData.append('skills', 'Project management');
+    formData.append('expertiseAreas', JSON.stringify(['Tourism', 'Hospitality']));
+    formData.append('interests', JSON.stringify(['Training', 'Research']));
     formData.append('idType', 'fayda');
     formData.append('idNumber', `FAYDA-${rand}`);
     formData.append('zone', 'East Shewa');
@@ -242,6 +252,14 @@ async function runTests() {
     if (!regRes.ok) {
       const err = await regRes.text();
       throw new Error(`Registration failed HTTP ${regRes.status}: ${err}`);
+    }
+    const regJson = (await regRes.json()) as any;
+    const memberId = regJson.data?.memberId;
+    if (!memberId || !/^OHPEA-\d{4}-\d{5}$/.test(regJson.data?.memberNo || '')) {
+      throw new Error('Expected memberId and a generated memberNo in registration response');
+    }
+    if (regJson.data?.registrationStatus !== 'pending' || regJson.data?.membershipStatus !== 'pending') {
+      throw new Error('Expected both member statuses to be pending');
     }
 
     // 2. Request OTP send
@@ -264,6 +282,33 @@ async function runTests() {
     if (!verifyRes.ok) throw new Error(`OTP verify failed: HTTP ${verifyRes.status}`);
     const verifyJson = (await verifyRes.json()) as any;
     if (!verifyJson.success || !verifyJson.data?.verified) throw new Error('OTP verify response invalid');
+
+    if (adminToken) {
+      const memberRes = await fetch(`${BASE_URL}/api/admin/members/${memberId}`, {
+        headers: { Authorization: `Bearer ${adminToken}` },
+      });
+      if (!memberRes.ok) throw new Error(`New member not visible in admin portal: HTTP ${memberRes.status}`);
+      const memberJson = (await memberRes.json()) as any;
+      if (memberJson.data?.registrationStatus !== 'pending' || memberJson.data?.membershipStatus !== 'pending') {
+        throw new Error('OTP verification changed the pending member status');
+      }
+      if (memberJson.data?.documents?.length !== 1) {
+        throw new Error('Expected the ID document to be associated with the member');
+      }
+      if (
+        memberJson.data?.membershipCategory !== 'Professional' ||
+        memberJson.data?.dateOfBirth?.slice(0, 10) !== '1990-05-21' ||
+        memberJson.data?.nationality !== 'Ethiopian' ||
+        memberJson.data?.emergencyContactName !== 'Desta Tolessa' ||
+        memberJson.data?.emergencyContactPhone !== '+251911112233' ||
+        memberJson.data?.businessTin !== 'TIN-12345' ||
+        memberJson.data?.skills !== 'Project management' ||
+        JSON.stringify(memberJson.data?.expertiseAreas) !== JSON.stringify(['Tourism', 'Hospitality']) ||
+        JSON.stringify(memberJson.data?.interests) !== JSON.stringify(['Training', 'Research'])
+      ) {
+        throw new Error('Registration did not persist all paper-form fields');
+      }
+    }
   });
 
   // Test 9: OTP verify with wrong code 5x -> 400, attempts increment, 6th call blocked
@@ -360,7 +405,7 @@ async function runTests() {
   });
 
   // Test 12: Repeated verify is safe
-  await test('Compat 2: Repeated OTP verify is safe (second verify 400, stays pending_review)', async () => {
+  await test('Compat 2: Repeated OTP verify is safe and member remains pending', async () => {
     const rand = Math.floor(Math.random() * 89999999 + 10000000);
     const phone = `+2519${rand}`;
 
@@ -382,7 +427,8 @@ async function runTests() {
       throw new Error(`Registration failed HTTP ${regRes.status}: ${errText}`);
     }
     const regJson = (await regRes.json()) as any;
-    const registrationId = regJson.data?.registrationId;
+    const memberId = regJson.data?.memberId;
+    if (!memberId) throw new Error('Expected memberId in registration response');
 
     // 2. Request OTP
     const sendRes = await fetch(`${BASE_URL}/api/public/registrations/otp/send`, {
@@ -401,19 +447,14 @@ async function runTests() {
     });
     if (!v1Res.ok) throw new Error(`First verify failed HTTP ${v1Res.status}`);
 
-    // Verify registration status is now pending_review and otpVerified is true
-    if (adminToken && registrationId) {
-      const checkRes = await fetch(`${BASE_URL}/api/admin/registrations/${registrationId}`, {
+    if (adminToken) {
+      const checkRes = await fetch(`${BASE_URL}/api/admin/members/${memberId}`, {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
-      if (checkRes.ok) {
-        const checkJson = (await checkRes.json()) as any;
-        if (checkJson.data?.status !== 'pending_review') {
-          throw new Error(`Expected status === 'pending_review', got ${checkJson.data?.status}`);
-        }
-        if (!checkJson.data?.otpVerified) {
-          throw new Error('Expected otpVerified === true');
-        }
+      if (!checkRes.ok) throw new Error(`Member not visible in admin portal: HTTP ${checkRes.status}`);
+      const checkJson = (await checkRes.json()) as any;
+      if (checkJson.data?.registrationStatus !== 'pending' || checkJson.data?.membershipStatus !== 'pending') {
+        throw new Error('Expected member registration and membership statuses to remain pending');
       }
     }
 
@@ -427,22 +468,20 @@ async function runTests() {
       throw new Error(`Expected repeated verify to return HTTP 400, got ${v2Res.status}`);
     }
 
-    // Check registration status still intact as pending_review
-    if (adminToken && registrationId) {
-      const checkRes = await fetch(`${BASE_URL}/api/admin/registrations/${registrationId}`, {
+    if (adminToken) {
+      const checkRes = await fetch(`${BASE_URL}/api/admin/members/${memberId}`, {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
-      if (checkRes.ok) {
-        const checkJson = (await checkRes.json()) as any;
-        if (checkJson.data?.status !== 'pending_review') {
-          throw new Error(`Registration corrupted after repeated verify! Status is ${checkJson.data?.status}`);
-        }
+      if (!checkRes.ok) throw new Error(`Member not visible after repeated verification: HTTP ${checkRes.status}`);
+      const checkJson = (await checkRes.json()) as any;
+      if (checkJson.data?.registrationStatus !== 'pending' || checkJson.data?.membershipStatus !== 'pending') {
+        throw new Error('Member status changed after repeated verification');
       }
     }
   });
 
-  // Test 13: Verify before upload self-promotion
-  await test('Compat 3: Verify before upload self-promotes to pending_review', async () => {
+  // Test 13: OTP verified before registration does not change its pending status
+  await test('Compat 3: Verify before upload still creates a pending member', async () => {
     const rand = Math.floor(Math.random() * 89999999 + 10000000);
     const phone = `+2519${rand}`;
 
@@ -481,22 +520,20 @@ async function runTests() {
       throw new Error(`Registration upload failed HTTP ${regRes.status}: ${errText}`);
     }
     const regJson = (await regRes.json()) as any;
-    const registrationId = regJson.data?.registrationId;
-    if (!registrationId) throw new Error('Missing registrationId in response');
+    const memberId = regJson.data?.memberId;
+    if (!memberId) throw new Error('Missing memberId in response');
+    if (regJson.data?.registrationStatus !== 'pending' || regJson.data?.membershipStatus !== 'pending') {
+      throw new Error('Expected a pending member regardless of OTP verification order');
+    }
 
-    // 4. Verify that registration was self-promoted to pending_review and otpVerified === true
     if (adminToken) {
-      const checkRes = await fetch(`${BASE_URL}/api/admin/registrations/${registrationId}`, {
+      const checkRes = await fetch(`${BASE_URL}/api/admin/members/${memberId}`, {
         headers: { Authorization: `Bearer ${adminToken}` },
       });
-      if (checkRes.ok) {
-        const checkJson = (await checkRes.json()) as any;
-        if (checkJson.data?.status !== 'pending_review') {
-          throw new Error(`Expected self-promotion to 'pending_review', got '${checkJson.data?.status}'`);
-        }
-        if (!checkJson.data?.otpVerified) {
-          throw new Error('Expected otpVerified === true on self-promoted registration');
-        }
+      if (!checkRes.ok) throw new Error(`New member not visible in admin portal: HTTP ${checkRes.status}`);
+      const checkJson = (await checkRes.json()) as any;
+      if (checkJson.data?.registrationStatus !== 'pending' || checkJson.data?.membershipStatus !== 'pending') {
+        throw new Error('Expected the member to remain pending after earlier OTP verification');
       }
     }
   });

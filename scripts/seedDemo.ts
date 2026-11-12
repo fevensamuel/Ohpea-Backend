@@ -6,6 +6,10 @@ import 'dotenv/config';
 import { getPool, initDatabase, seedDemoData } from '../src/backend/database.js';
 
 async function main() {
+  if (process.env.SEED_DEMO_DATA !== 'true') {
+    throw new Error('Set SEED_DEMO_DATA=true to enable demo data seeding.');
+  }
+
   await initDatabase();
   console.log('[Script] Triggering manual demo data seed...');
   const pool = await getPool();

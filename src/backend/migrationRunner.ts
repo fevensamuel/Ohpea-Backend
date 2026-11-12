@@ -11,6 +11,8 @@ import * as m9 from '../../migrations/20261107000009_create_woredas.js';
 import * as m10 from '../../migrations/20261107000010_unify_contact_messages.js';
 import * as m11 from '../../migrations/20261107000011_public_enum_constraints.js';
 import * as m12 from '../../migrations/20261107000012_add_otp_verified_at.js';
+import * as m14 from '../../migrations/20261112000014_add_full_registration_fields.js';
+import * as m15 from '../../migrations/20261113000015_add_demo_flags.js';
 
 export const allMigrations = [
   { name: '20261107000001_add_slug_to_programs', up: m1.up, down: m1.down },
@@ -25,6 +27,8 @@ export const allMigrations = [
   { name: '20261107000010_unify_contact_messages', up: m10.up, down: m10.down },
   { name: '20261107000011_public_enum_constraints', up: m11.up, down: m11.down },
   { name: '20261107000012_add_otp_verified_at', up: m12.up, down: m12.down },
+  { name: '20261112000014_add_full_registration_fields', up: m14.up, down: m14.down },
+  { name: '20261113000015_add_demo_flags', up: m15.up, down: m15.down },
 ];
 
 export async function runAllMigrations(pool: Pool | any): Promise<void> {

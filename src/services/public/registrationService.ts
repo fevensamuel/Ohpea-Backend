@@ -1,18 +1,65 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { query } from '../../backend/database.js';
+import { getPool, query } from '../../backend/database.js';
+import { PRIVATE_UPLOAD_PATH } from '../../config/multer.js';
 
 export interface RegistrationInput {
   fullName?: string;
   email?: string;
   phone?: string;
+  gender?: string;
+  dateOfBirth?: string;
+  membershipCategory?: string;
+  nationality?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  businessTin?: string;
+  skills?: string;
+  expertiseAreas?: string[] | string;
+  interests?: string[] | string;
   qualification?: string;
   fieldOfStudy?: string;
   organization?: string;
   zone?: string;
   idType?: string;
   idNumber?: string;
+}
+
+export class DuplicateRegistrationError extends Error {
+  constructor() {
+    super('A member with this phone number, email address, or ID number already exists.');
+    this.name = 'DuplicateRegistrationError';
+  }
+}
+
+function isStringArrayInput(value: unknown): boolean {
+  if (value === undefined || value === null || value === '') return true;
+  if (Array.isArray(value)) return value.every((item) => typeof item === 'string');
+  if (typeof value !== 'string') return false;
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.every((item) => typeof item === 'string');
+  } catch {
+    // Multipart clients may submit these fields as comma-separated strings.
+  }
+  return true;
+}
+
+function toStringArray(value: string[] | string | undefined): string[] {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map((item) => item.trim()).filter(Boolean);
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
+      return parsed.map((item) => item.trim()).filter(Boolean);
+    }
+  } catch {
+    // Treat ordinary multipart text as a comma-separated list.
+  }
+  return value.split(',').map((item) => item.trim()).filter(Boolean);
 }
 
 export function validateRegistrationInput(
@@ -37,6 +84,33 @@ export function validateRegistrationInput(
     if (!emailRegex.test(body.email.trim())) {
       fields.email = 'Invalid email address';
     }
+  }
+
+  const allowedGenders = ['male', 'female', 'unspecified'];
+  if (body.gender && !allowedGenders.includes(body.gender.trim().toLowerCase())) {
+    fields.gender = 'gender must be one of: male, female, unspecified';
+  }
+
+  const allowedMembershipCategories = ['Professional', 'Entrepreneur', 'Corporate', 'Associate'];
+  if (body.membershipCategory && !allowedMembershipCategories.includes(body.membershipCategory.trim())) {
+    fields.membershipCategory = 'membershipCategory must be one of: Professional, Entrepreneur, Corporate, Associate';
+  }
+
+  if (body.dateOfBirth) {
+    const dateOfBirth = body.dateOfBirth.trim();
+    const parsedDate = new Date(`${dateOfBirth}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) ||
+      Number.isNaN(parsedDate.getTime()) ||
+      parsedDate.toISOString().slice(0, 10) !== dateOfBirth) {
+      fields.dateOfBirth = 'dateOfBirth must be a valid date in YYYY-MM-DD format';
+    }
+  }
+
+  if (!isStringArrayInput(body.expertiseAreas)) {
+    fields.expertiseAreas = 'expertiseAreas must be an array of strings';
+  }
+  if (!isStringArrayInput(body.interests)) {
+    fields.interests = 'interests must be an array of strings';
   }
 
   const allowedIdTypes = ['fayda', 'passport', 'kebele', 'driver'];
@@ -69,87 +143,129 @@ export async function processRegistrationFilesAndSave(
   body: RegistrationInput,
   idDocumentFile: Express.Multer.File,
   credentialFiles: Express.Multer.File[] = []
-): Promise<string> {
-  const registrationId = crypto.randomUUID();
-  const destDir = path.resolve('uploads/registrations', registrationId);
+): Promise<{ memberId: string; memberNo: string }> {
+  const pool = await getPool();
+  const client = await pool.connect();
+  const memberId = crypto.randomUUID();
+  const year = new Date().getFullYear();
+  let memberDir: string | undefined;
+  let transactionStarted = false;
 
-  fs.mkdirSync(destDir, { recursive: true });
+  try {
+    await client.query('BEGIN');
+    transactionStarted = true;
 
-  // Move ID document
-  const idDocExt = path.extname(idDocumentFile.originalname) || '.bin';
-  const idDocDestName = `id_document${idDocExt}`;
-  const idDocDestPath = path.join(destDir, idDocDestName);
-  fs.renameSync(idDocumentFile.path, idDocDestPath);
+    const idType = body.idType?.trim().toLowerCase() || 'fayda';
+    const idNumber = body.idNumber?.trim() || '';
+    const pepper = process.env.SERVER_PEPPER || 'ohpea_pepper_2026';
+    const idHash = crypto.createHash('sha256').update(`${idType}:${idNumber}:${pepper}`).digest('hex');
+    const email = body.email?.trim().toLowerCase() || null;
+    const duplicate = await client.query(
+      `SELECT id FROM members
+       WHERE phone = $1 OR ($2::text IS NOT NULL AND email = $2) OR id_number_hash = $3
+       LIMIT 1`,
+      [body.phone?.trim() || '', email, idHash]
+    );
+    if (duplicate.rows.length > 0) {
+      throw new DuplicateRegistrationError();
+    }
 
-  // Move credentials
-  const credentialPaths: string[] = [];
-  let index = 1;
-  for (const credFile of credentialFiles) {
-    const credExt = path.extname(credFile.originalname) || '.bin';
-    const credDestName = `credential_${index}${credExt}`;
-    const credDestPath = path.join(destDir, credDestName);
-    fs.renameSync(credFile.path, credDestPath);
-    credentialPaths.push(credDestPath);
-    index++;
-  }
+    const memberCount = await client.query(
+      `SELECT COUNT(*)::int AS count FROM members WHERE member_no LIKE $1`,
+      [`OHPEA-${year}-%`]
+    );
+    const memberNo = `OHPEA-${year}-${String(Number(memberCount.rows[0].count) + 1).padStart(5, '0')}`;
+    const memberEmail = email || `${memberNo.toLowerCase()}@ohpea.org`;
 
-  // Insert into registrations table (both snake_case and quoted camelCase)
-  await query(
-    `INSERT INTO registrations (
-      id, full_name, email, phone, qualification, field_of_study, organization, zone,
-      id_type, id_number, id_document_path, credential_doc_paths, otp_verified, status,
-      "fullName", "fieldOfStudy", "idType", "idNumber", "idDocumentPath", "credentialDocPaths", "otpVerified",
-      created_at, updated_at
-    ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8,
-      $9, $10, $11, $12, false, 'pending_otp',
-      $2, $6, $9, $10, $11, $12, false,
-      NOW(), NOW()
-    )`,
-    [
-      registrationId,
-      body.fullName?.trim() || '',
-      body.email?.trim() || null,
-      body.phone?.trim() || '',
-      body.qualification?.trim() || null,
-      body.fieldOfStudy?.trim() || null,
-      body.organization?.trim() || null,
-      body.zone?.trim() || null,
-      body.idType?.trim().toLowerCase() || 'fayda',
-      body.idNumber?.trim() || '',
-      idDocDestPath,
-      JSON.stringify(credentialPaths),
-    ]
-  );
+    memberDir = path.join(PRIVATE_UPLOAD_PATH, 'members', memberId);
+    fs.mkdirSync(memberDir, { recursive: true });
 
-  // Self-promote if OTP was already verified for this phone within the last 15 minutes
-  const cleanPhone = body.phone?.trim() || '';
-  if (cleanPhone) {
-    const otpCheck = await query(
-      `SELECT phone, verified_for_phone_at, "verifiedForPhoneAt", consumed
-       FROM otp_codes
-       WHERE phone = $1 AND consumed = true`,
-      [cleanPhone]
+    const documentFiles = [
+      { file: idDocumentFile, kind: 'id' },
+      ...credentialFiles.map((file) => ({ file, kind: 'credential' })),
+    ];
+
+    await client.query(
+      `INSERT INTO members (
+        id, member_no, full_name, phone, email, gender, date_of_birth,
+        membership_category, nationality, business_tin, skills, expertise_areas, interests,
+        emergency_contact_name, emergency_contact_phone,
+        graduation_level_id, occupation_type, sector_id, field_of_study_id,
+        professional_category, organization_name, region_id, town,
+        id_type, id_number_hash, id_number_last4, registration_status, membership_status, source,
+        created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11, $12, $13,
+        $14, $15,
+        'grad-first_degree', 'private', 'sec-other', 'fos-other',
+        $16, $17, 'reg-east-shewa', $18,
+        $19, $20, $21, 'pending', 'pending', 'online',
+        NOW(), NOW()
+      )`,
+      [
+        memberId,
+        memberNo,
+        body.fullName?.trim() || '',
+        body.phone?.trim() || '',
+        memberEmail,
+        body.gender?.trim().toLowerCase() || 'unspecified',
+        body.dateOfBirth?.trim() || null,
+        body.membershipCategory?.trim() || null,
+        body.nationality?.trim() || null,
+        body.businessTin?.trim() || null,
+        body.skills?.trim() || null,
+        toStringArray(body.expertiseAreas),
+        toStringArray(body.interests),
+        body.emergencyContactName?.trim() || null,
+        body.emergencyContactPhone?.trim() || null,
+        body.qualification?.trim() || null,
+        body.organization?.trim() || null,
+        body.zone?.trim() || 'Adama',
+        idType,
+        idHash,
+        idNumber.slice(-4) || '0000',
+      ]
     );
 
-    if (otpCheck.rows.length > 0) {
-      const vAt = otpCheck.rows[0].verified_for_phone_at || otpCheck.rows[0].verifiedForPhoneAt;
-      if (vAt) {
-        const verifiedTime = new Date(vAt).getTime();
-        const fifteenMinutesAgo = Date.now() - 15 * 60 * 1000;
-        if (verifiedTime >= fifteenMinutesAgo) {
-          await query(
-            `UPDATE registrations
-             SET otp_verified = true, "otpVerified" = true, status = 'pending_review', updated_at = NOW()
-             WHERE id = $1`,
-            [registrationId]
-          );
-        }
-      }
-    }
-  }
+    for (const [index, document] of documentFiles.entries()) {
+      const extension = path.extname(document.file.originalname).toLowerCase() || '.bin';
+      const storedName = `${document.kind}-${index + 1}-${crypto.randomBytes(6).toString('hex')}${extension}`;
+      const destinationPath = path.join(memberDir, storedName);
+      fs.renameSync(document.file.path, destinationPath);
+      const sha256 = crypto.createHash('sha256').update(fs.readFileSync(destinationPath)).digest('hex');
 
-  return registrationId;
+      await client.query(
+        `INSERT INTO member_documents (
+          id, member_id, kind, original_name, stored_name, mime, size, sha256, uploaded_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
+        [
+          crypto.randomUUID(),
+          memberId,
+          document.kind,
+          document.file.originalname,
+          storedName,
+          document.file.mimetype,
+          document.file.size,
+          sha256,
+        ]
+      );
+    }
+
+    await client.query('COMMIT');
+    transactionStarted = false;
+    return { memberId, memberNo };
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query('ROLLBACK');
+    }
+    if (memberDir) {
+      fs.rmSync(memberDir, { recursive: true, force: true });
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**

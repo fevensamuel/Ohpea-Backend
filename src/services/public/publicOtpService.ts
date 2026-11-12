@@ -112,23 +112,5 @@ export async function verifyRegistrationOtp(
     [phone]
   );
 
-  // Update most recent registration for this phone with status = 'pending_otp'
-  const regRes = await query(
-    `SELECT id FROM registrations WHERE phone = $1 AND status = 'pending_otp' ORDER BY created_at DESC LIMIT 1`,
-    [phone]
-  );
-
-  if (regRes.rows.length > 0) {
-    const regId = regRes.rows[0].id;
-    await query(
-      `UPDATE registrations SET
-        otp_verified = true, "otpVerified" = true,
-        status = 'pending_review',
-        updated_at = NOW(), "updatedAt" = NOW()
-       WHERE id = $1`,
-      [regId]
-    );
-  }
-
   return { success: true };
 }

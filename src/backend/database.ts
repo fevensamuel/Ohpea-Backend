@@ -218,8 +218,16 @@ export async function initDatabase(): Promise<void> {
       full_name TEXT NOT NULL,
       phone TEXT UNIQUE NOT NULL,
       email TEXT UNIQUE NOT NULL,
-      gender TEXT NOT NULL,
+      gender TEXT NOT NULL DEFAULT 'unspecified',
       date_of_birth DATE,
+      membership_category TEXT,
+      nationality TEXT,
+      business_tin TEXT,
+      skills TEXT,
+      expertise_areas TEXT[],
+      interests TEXT[],
+      emergency_contact_name TEXT,
+      emergency_contact_phone TEXT,
       graduation_level_id TEXT NOT NULL,
       occupation_type TEXT NOT NULL,
       sector_id TEXT NOT NULL,
@@ -309,6 +317,7 @@ export async function initDatabase(): Promise<void> {
       status TEXT NOT NULL DEFAULT 'published',
       cover_image_url TEXT,
       created_by TEXT NOT NULL,
+      is_demo BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -348,6 +357,7 @@ export async function initDatabase(): Promise<void> {
       activity_date DATE NOT NULL,
       image_url TEXT,
       is_public BOOLEAN NOT NULL DEFAULT true,
+      is_demo BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -935,6 +945,10 @@ async function seedInitialData(pool: any): Promise<void> {
  * Seed Realistic Demo Data (~150 members, ~600 payments, 8 announcements)
  */
 export async function seedDemoData(pool: any): Promise<void> {
+  if (process.env.SEED_DEMO_DATA !== 'true') {
+    return;
+  }
+
   const existingDemo = await pool.query('SELECT count(*) as count FROM members WHERE is_demo = true');
   if (parseInt(existingDemo.rows[0].count, 10) > 0) {
     return;
@@ -1214,8 +1228,8 @@ export async function seedDemoData(pool: any): Promise<void> {
     await pool.query(
       `INSERT INTO announcements (
         id, slug, type, title, summary, body, deadline, event_start_at, event_end_at,
-        registration_open, registration_url, status, published_at, created_by, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'published',NOW(),'SuperAdmin',NOW())`,
+        registration_open, registration_url, status, published_at, created_by, is_demo, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'published',NOW(),'SuperAdmin',true,NOW())`,
       [
         crypto.randomUUID(),
         a.slug,
@@ -1238,14 +1252,35 @@ export async function seedDemoData(pool: any): Promise<void> {
 /**
  * Remove Demo Data helper (npm run seed:clear-demo)
  */
-export async function clearDemoData(): Promise<{ membersDeleted: number; paymentsDeleted: number }> {
+export async function clearDemoData(): Promise<{
+  membersDeleted: number;
+  paymentsDeleted: number;
+  announcementsDeleted: number;
+  activitiesDeleted: number;
+}> {
   const pool = await getPool();
-  const paymentsRes = await pool.query('DELETE FROM payments WHERE is_demo = true');
-  const membersRes = await pool.query('DELETE FROM members WHERE is_demo = true');
-  return {
-    membersDeleted: membersRes.rowCount || 0,
-    paymentsDeleted: paymentsRes.rowCount || 0,
-  };
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+    const paymentsRes = await client.query('DELETE FROM payments WHERE is_demo = true');
+    const membersRes = await client.query('DELETE FROM members WHERE is_demo = true');
+    const announcementsRes = await client.query('DELETE FROM announcements WHERE is_demo = true');
+    const activitiesRes = await client.query('DELETE FROM activities WHERE is_demo = true');
+    await client.query('COMMIT');
+
+    return {
+      paymentsDeleted: paymentsRes.rowCount || 0,
+      membersDeleted: membersRes.rowCount || 0,
+      announcementsDeleted: announcementsRes.rowCount || 0,
+      activitiesDeleted: activitiesRes.rowCount || 0,
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**

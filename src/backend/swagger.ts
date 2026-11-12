@@ -385,18 +385,31 @@ export const openApiSpec = {
         tags: ['Public'],
         summary: 'Submit new membership registration (multipart/form-data)',
         security: [],
-        description: 'Accepts application fields with idDocument and credentialDocs. Canonical flow: (1) send OTP, (2) submit registration, (3) verify OTP. If verify precedes upload within 15 minutes, the registration automatically self-promotes to pending_review.',
+        description: 'Creates a pending member directly in the members table and associates uploaded documents with that member. OTP verification does not change member status.',
         requestBody: {
           required: true,
           content: {
             'multipart/form-data': {
               schema: {
                 type: 'object',
-                required: ['fullName', 'phone', 'idType', 'idNumber'],
+                required: ['fullName', 'phone', 'idType', 'idNumber', 'idDocument'],
                 properties: {
                   fullName: { type: 'string', minLength: 2, maxLength: 120 },
                   email: { type: 'string', format: 'email' },
                   phone: { type: 'string', pattern: '^\\+251(9|7)\\d{8}$' },
+                  gender: { type: 'string', enum: ['male', 'female', 'unspecified'] },
+                  membershipCategory: {
+                    type: 'string',
+                    enum: ['Professional', 'Entrepreneur', 'Corporate', 'Associate'],
+                  },
+                  dateOfBirth: { type: 'string', format: 'date' },
+                  nationality: { type: 'string' },
+                  emergencyContactName: { type: 'string' },
+                  emergencyContactPhone: { type: 'string' },
+                  businessTin: { type: 'string' },
+                  skills: { type: 'string' },
+                  expertiseAreas: { type: 'array', items: { type: 'string' } },
+                  interests: { type: 'array', items: { type: 'string' } },
                   qualification: { type: 'string' },
                   fieldOfStudy: { type: 'string' },
                   organization: { type: 'string' },
@@ -411,8 +424,9 @@ export const openApiSpec = {
           },
         },
         responses: {
-          '201': { description: 'Application registered with pending_otp or pending_review status' },
+          '201': { description: 'Pending member created; response contains memberId and memberNo' },
           '400': { description: 'Validation failed' },
+          '409': { description: 'Member with the supplied phone, email, or ID already exists' },
         },
       },
     },

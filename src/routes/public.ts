@@ -17,6 +17,7 @@ import {
   buildPublicActivity,
 } from '../services/public/publicMappers.js';
 import {
+  DuplicateRegistrationError,
   validateRegistrationInput,
   processRegistrationFilesAndSave,
 } from '../services/public/registrationService.js';
@@ -275,7 +276,7 @@ publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunc
         return fail(res, 'Validation failed', 400, validation.fields);
       }
 
-      const registrationId = await processRegistrationFilesAndSave(
+      const member = await processRegistrationFilesAndSave(
         req.body,
         idDocFile!,
         credentialFiles
@@ -284,10 +285,16 @@ publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunc
       return res.status(201).json({
         success: true,
         data: {
-          registrationId,
+          memberId: member.memberId,
+          memberNo: member.memberNo,
+          registrationStatus: 'pending',
+          membershipStatus: 'pending',
         },
       });
     } catch (err: any) {
+      if (err instanceof DuplicateRegistrationError) {
+        return fail(res, err.message, 409);
+      }
       return fail(res, err.message, 500);
     }
   });

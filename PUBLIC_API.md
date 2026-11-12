@@ -298,19 +298,19 @@ curl -s http://localhost:3000/api/public/lookups/regions
 Public membership application submission. Accepts `multipart/form-data` with:
 - `fullName`: string (required)
 - `phone`: string (required, valid Ethiopian mobile e.g. +2519... or +2517...)
-- `email`: string (required, valid email)
-- `gender`: `'male' | 'female' | 'other'` (required)
-- `regionId`: string (required)
-- `woredaId`: string (required)
-- `profession`: string (required)
-- `organization`: string (optional)
+- `email`: string (optional, valid email; a member address is generated if omitted)
+- `gender`: `'male' | 'female' | 'unspecified'` (optional; defaults to `unspecified`)
+- `membershipCategory`: `'Professional' | 'Entrepreneur' | 'Corporate' | 'Associate'` (optional)
+- `dateOfBirth`: date string in `YYYY-MM-DD` format (optional)
+- `nationality`, `emergencyContactName`, `emergencyContactPhone`, `businessTin`, `skills`: strings (optional)
+- `expertiseAreas`, `interests`: arrays of strings (optional; JSON-encoded arrays or comma-separated multipart values)
+- `qualification`, `fieldOfStudy`, `organization`, `zone`: strings (optional)
 - `idType`: `'fayda' | 'passport' | 'kebele' | 'driver'` (required)
 - `idNumber`: string (required)
 - `idDocument`: File (required, PDF/JPG/PNG, max 5MB)
-- `educationalDocument`: File (optional, PDF/JPG/PNG, max 5MB)
-- `passportPhoto`: File (optional, JPG/PNG, max 5MB)
+- `credentialDocs`: File[] (optional, max 10 files)
 
-Persists with initial `status = 'pending_otp'` and `otp_verified = false`. Returns `201 Created` with `{ "success": true, "data": { "registrationId": "..." } }`.
+Persists directly in `members` with `registration_status = 'pending'` and `membership_status = 'pending'`. Uploaded files are associated with the new member in `member_documents`. Returns `201 Created` with the member ID and member number.
 
 *Enum Constraint:* `idType` MUST be one of `'fayda'`, `'passport'`, `'kebele'`, `'driver'`. Any other value returns HTTP 400 with `fields.idType`.
 
@@ -318,18 +318,15 @@ Persists with initial `status = 'pending_otp'` and `otp_verified = false`. Retur
 
 ### Registration flow (required order)
 
-The public website MUST call these in order. Any other order leaves the
-registration in `pending_otp` and invisible to admins.
+The public website may request and verify a phone OTP independently of the
+registration. A submitted registration is immediately visible to admins with
+pending statuses; OTP verification does not write to the legacy `registrations`
+table or change member status.
 
 1. `POST /api/public/registrations/otp/send` `{ phone }`
 2. `POST /api/public/registrations` multipart (fields listed above)
-   → returns `{ data: { registrationId } }`
+   → returns `{ data: { memberId, memberNo, registrationStatus, membershipStatus } }`
 3. `POST /api/public/registrations/otp/verify` `{ phone, code }`
-
-**Resilience:** if `verify` is called BEFORE `registrations`, the OTP is still consumed
-and a later `registrations` POST will self-promote to `pending_review` (see
-`otp_codes.verified_for_phone_at`). This is a safety net — clients should still
-follow the order above.
 
 ---
 
@@ -357,7 +354,7 @@ curl -X POST http://localhost:3000/api/public/registrations/otp/send \
 ---
 
 ### 3.3 `POST /api/public/registrations/otp/verify`
-Verifies the submitted 6-digit code. On successful verification, the most recent pending registration for the phone is transitioned to `otpVerified = true` and `status = 'pending_review'` for admin review.
+Verifies the submitted 6-digit code and records the phone verification timestamp.
 - Maximum 5 attempts allowed before lock out.
 
 #### Request
