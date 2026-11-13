@@ -1477,45 +1477,64 @@ export const dbOperations = {
   },
 
   async createMember(data: any) {
-    const res = await query(
-      `INSERT INTO members (
-        id, member_no, full_name, phone, email, gender, date_of_birth,
-        graduation_level_id, occupation_type, sector_id, field_of_study_id,
-        professional_category, organization_name, job_title, region_id, town,
-        id_type, id_number_hash, id_number_last4, registration_status, membership_status,
-        preferred_language, source, consent_at, created_at, updated_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-        $17, $18, $19, $20, $21, $22, $23, NOW(), NOW(), NOW()
-      ) RETURNING *`,
-      [
-        data.id || crypto.randomUUID(),
-        data.memberNo,
-        data.fullName,
-        data.phone,
-        data.email.toLowerCase(),
-        data.gender,
-        data.dateOfBirth || null,
-        data.graduationLevelId,
-        data.occupationType,
-        data.sectorId,
-        data.fieldOfStudyId,
-        data.professionalCategory || null,
-        data.organizationName || null,
-        data.jobTitle || null,
-        data.regionId,
-        data.town || null,
-        data.idType,
-        data.idNumberHash,
-        data.idNumberLast4,
-        data.registrationStatus || 'pending',
-        data.membershipStatus || 'pending',
-        data.preferredLanguage || 'en',
-        data.source || 'online',
-      ]
-    );
-    return mapRow(res.rows[0]);
-  },
+  const res = await query(
+    `INSERT INTO members (
+      id, member_no, full_name, phone, email, gender, date_of_birth,
+      graduation_level_id, occupation_type, sector_id, field_of_study_id,
+      professional_category, organization_name, job_title, region_id, town,
+      id_type, id_number_hash, id_number_last4, registration_status, membership_status,
+      preferred_language, source, consent_at, created_at, updated_at,
+      membership_category, nationality,
+      emergency_contact_name, emergency_contact_phone,
+      business_tin, year_established, institution_name,
+      skills, expertise_areas, interests,
+      zone_sub_city, woreda
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+      $17, $18, $19, $20, $21, $22, $23, NOW(), NOW(), NOW(),
+      $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35
+    ) RETURNING *`,
+    [
+      data.id || crypto.randomUUID(),
+      data.memberNo,
+      data.fullName,
+      data.phone,
+      data.email.toLowerCase(),
+      data.gender,
+      data.dateOfBirth || null,
+      data.graduationLevelId || null,
+      data.occupationType || null,
+      data.sectorId || null,
+      data.fieldOfStudyId || null,
+      data.professionalCategory || null,
+      data.organizationName || null,
+      data.jobTitle || null,
+      data.regionId || null,
+      data.town || null,
+      data.idType || 'fayda',
+      data.idNumberHash || '',
+      data.idNumberLast4 || '',
+      data.registrationStatus || 'pending',
+      data.membershipStatus || 'pending',
+      data.preferredLanguage || 'en',
+      data.source || 'online',
+      // New fields:
+      data.membershipCategory || null,
+      data.nationality || null,
+      data.emergencyContactName || null,
+      data.emergencyContactPhone || null,
+      data.businessTin || null,
+      data.yearEstablished ?? null,
+      data.institutionName || null,
+      data.skills || null,
+      Array.isArray(data.expertiseAreas) ? JSON.stringify(data.expertiseAreas) : null,
+      Array.isArray(data.interests) ? JSON.stringify(data.interests) : null,
+      data.zoneSubCity || null,
+      data.woreda || null,
+    ]
+  );
+  return mapRow(res.rows[0]);
+},
 
   async updateMemberStatus(id: string, membershipStatus: string) {
     const res = await query(

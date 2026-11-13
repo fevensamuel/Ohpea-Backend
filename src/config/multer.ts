@@ -1,8 +1,3 @@
-/**
- * Multer File Upload Configuration
- * Enforces size limits, allowed extensions/MIMEs, and separates public vs private storage.
- */
-
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -93,7 +88,10 @@ export const uploadPrivate = multer({
 
 export const memberRegistrationUpload = uploadPrivate.fields([
   { name: 'idDocument', maxCount: 1 },
+  { name: 'cvCompanyProfile', maxCount: 1 },
+  { name: 'academicCertificates', maxCount: 10 },
   { name: 'credentials', maxCount: 5 },
+  { name: 'credentialDocs', maxCount: 10 },
 ]);
 
 export function calculateFileHash(filePath: string): string {

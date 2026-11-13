@@ -7,7 +7,7 @@ import swaggerUi from 'swagger-ui-express';
 
 import { initDatabase, testConnection, query } from './src/backend/database.js';
 import { apiRouter } from './src/backend/routes.js';
-import { publicRouter } from './src/routes/public.js';
+import { publicRouter } from './src/backend/routes/public.js';
 import { healthRouter } from './src/routes/health.js';
 import { contractRouter } from './src/routes/contract.js';
 import { openApiSpec } from './src/backend/swagger.js';
