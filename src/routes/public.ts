@@ -1,8 +1,3 @@
-/**
- * Public Unauthenticated Router for OHPEA Website
- * Mounted at /api/public without authentication requirements.
- */
-
 import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import path from 'path';
@@ -48,6 +43,9 @@ const registrationUpload = multer({
 }).fields([
   { name: 'idDocument', maxCount: 1 },
   { name: 'credentialDocs', maxCount: 10 },
+  // Accept the additional upload fields the newer website form sends
+  { name: 'cvCompanyProfile', maxCount: 1 },
+  { name: 'academicCertificates', maxCount: 10 },
 ]);
 
 // Rate Limiters: 100 req/min global, 5 req/min on OTP routes (with test headroom in dev)
@@ -84,13 +82,11 @@ const PUBLIC_STATS_CONTRACT_VERSION = 1;
 /* 2.2 GET /api/public/stats */
 const statsHandler = async (_req: Request, res: Response) => {
   try {
-    // Total active members (do not expose pending/rejected).
     const membersResult = await query(
       `SELECT COUNT(*)::int AS total FROM members WHERE membership_status = 'active'`
     );
     const totalMembers = membersResult.rows[0]?.total ?? 0;
 
-    // The other three come from settings counters (edited via the admin UI).
     const settingsResult = await query(
       `SELECT key, value FROM site_settings WHERE key IN
         ('stats.accreditedHotels', 'stats.certifiedGuides', 'stats.trainingGraduates')`
@@ -117,20 +113,10 @@ const statsHandler = async (_req: Request, res: Response) => {
 
     const data = {
       totalMembers: toInt(totalMembers, 0),
-      accreditedHotels: toInt(settingsMap['stats.accreditedHotels'], 87),
-      certifiedGuides: toInt(settingsMap['stats.certifiedGuides'], 143),
-      trainingGraduates: toInt(settingsMap['stats.trainingGraduates'], 320),
+      accreditedHotels: toInt(settingsMap['stats.accreditedHotels'], 0),
+      certifiedGuides: toInt(settingsMap['stats.certifiedGuides'], 0),
+      trainingGraduates: toInt(settingsMap['stats.trainingGraduates'], 0),
     };
-
-    // Hard guard: the shape MUST be exactly these four keys.
-    const keys = Object.keys(data).sort();
-    const expected = ['accreditedHotels', 'certifiedGuides', 'totalMembers', 'trainingGraduates'];
-    if (keys.length !== expected.length || keys.some((k, i) => k !== expected[i])) {
-      return res.status(500).json({
-        success: false,
-        error: 'Stats contract violated — expected exactly four fields.',
-      });
-    }
 
     res.setHeader('X-Contract-Version', String(PUBLIC_STATS_CONTRACT_VERSION));
     res.setHeader('Cache-Control', 'public, max-age=60');
@@ -147,7 +133,7 @@ publicRouter.get('/public/stats', statsHandler);
 publicRouter.get('/programs', async (req: Request, res: Response) => {
   try {
     const result = await query(
-      `SELECT * FROM programs WHERE is_published = true OR is_active = true ORDER BY COALESCE(order_index, sort_order, 0) ASC`
+      `SELECT * FROM programs WHERE COALESCE(is_published, true) = true AND COALESCE(is_active, true) = true ORDER BY COALESCE(order_index, sort_order, 0) ASC`
     );
     return success(res, result.rows.map(buildPublicProgram));
   } catch (err: any) {
@@ -158,7 +144,7 @@ publicRouter.get('/programs', async (req: Request, res: Response) => {
 publicRouter.get('/programs/:slug', async (req: Request, res: Response) => {
   try {
     const result = await query(
-      `SELECT * FROM programs WHERE slug = $1 AND (is_published = true OR is_active = true)`,
+      `SELECT * FROM programs WHERE slug = $1 AND COALESCE(is_published, true) = true AND COALESCE(is_active, true) = true`,
       [req.params.slug]
     );
     if (result.rows.length === 0) {
@@ -229,7 +215,7 @@ publicRouter.get('/announcements/:slug', async (req: Request, res: Response) => 
 publicRouter.get('/partners', async (req: Request, res: Response) => {
   try {
     const result = await query(
-      `SELECT * FROM partners WHERE is_published = true OR is_active = true ORDER BY COALESCE(order_index, sort_order, 0) ASC, name ASC`
+      `SELECT * FROM partners WHERE COALESCE(is_published, true) = true AND COALESCE(is_active, true) = true ORDER BY COALESCE(order_index, sort_order, 0) ASC, name ASC`
     );
     return success(res, result.rows.map(buildPublicPartner));
   } catch (err: any) {
@@ -259,6 +245,54 @@ publicRouter.get('/lookups/regions', async (req: Request, res: Response) => {
   }
 });
 
+/* 2.7b GET /api/public/lookups/fields */
+publicRouter.get('/lookups/fields', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT * FROM lookup_fields_of_study WHERE COALESCE(is_active, true) = true ORDER BY sort_order ASC`
+    );
+    return success(res, result.rows);
+  } catch (err: any) {
+    return fail(res, err.message, 500);
+  }
+});
+
+/* 2.7c GET /api/public/lookups/graduation-levels */
+publicRouter.get('/lookups/graduation-levels', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT * FROM lookup_graduation_levels WHERE COALESCE(is_active, true) = true ORDER BY sort_order ASC`
+    );
+    return success(res, result.rows);
+  } catch (err: any) {
+    return fail(res, err.message, 500);
+  }
+});
+
+/* 2.7d GET /api/public/lookups/sectors */
+publicRouter.get('/lookups/sectors', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT * FROM lookup_sectors WHERE COALESCE(is_active, true) = true ORDER BY sort_order ASC`
+    );
+    return success(res, result.rows);
+  } catch (err: any) {
+    return fail(res, err.message, 500);
+  }
+});
+
+/* 2.7e GET /api/public/lookups/occupations */
+publicRouter.get('/lookups/occupations', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT * FROM lookup_occupation_types WHERE COALESCE(is_active, true) = true ORDER BY sort_order ASC`
+    );
+    return success(res, result.rows);
+  } catch (err: any) {
+    return fail(res, err.message, 500);
+  }
+});
+
 /* 2.8 POST /api/public/registrations (multipart/form-data) */
 publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunction) => {
   registrationUpload(req, res, async (uploadErr: any) => {
@@ -271,9 +305,23 @@ publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunc
       const idDocFile = files?.['idDocument']?.[0];
       const credentialFiles = files?.['credentialDocs'] || [];
 
+      // Normalize gender: the form may send "Male" or "Female" (capitalized).
+      if (req.body.gender && typeof req.body.gender === 'string') {
+        req.body.gender = req.body.gender.toLowerCase();
+      }
+
       const validation = validateRegistrationInput(req.body, idDocFile);
       if (!validation.isValid) {
         return fail(res, 'Validation failed', 400, validation.fields);
+      }
+
+      // Normalize phone before passing to service
+      if (req.body.phone && typeof req.body.phone === 'string') {
+        let clean = req.body.phone.replace(/[^0-9+]/g, '');
+        if (clean.startsWith('09') || clean.startsWith('07')) clean = '+251' + clean.slice(1);
+        else if (/^[79]\d{8}$/.test(clean)) clean = '+251' + clean;
+        else if (clean.startsWith('251')) clean = '+' + clean;
+        req.body.phone = clean;
       }
 
       const member = await processRegistrationFilesAndSave(
