@@ -7,7 +7,6 @@ import swaggerUi from 'swagger-ui-express';
 
 import { initDatabase, testConnection, query } from './src/backend/database.js';
 import { apiRouter } from './src/backend/routes.js';
-import { publicRouter } from './src/backend/routes/public.js';
 import { healthRouter } from './src/routes/health.js';
 import { contractRouter } from './src/routes/contract.js';
 import { openApiSpec } from './src/backend/swagger.js';
@@ -21,7 +20,7 @@ if (!jwtSecret || jwtSecret.length < 32) {
   process.exit(1);
 }
 
-// Parse port from CLI args (--port 3000) or default to 3000
+// Parse port: CLI arg (--port 3000) > PORT env var > 3000
 const args = process.argv.slice(2);
 let cliPort: number | null = null;
 for (let i = 0; i < args.length; i++) {
@@ -143,10 +142,7 @@ app.use(
 app.use('/api', healthRouter);
 app.use('/api', contractRouter);
 
-// Mount Public router (unauthenticated, rate-limited)
-app.use('/api/public', publicRouter);
-
-// Mount API router (admin and auth)
+// Mount API router — contains ALL routes: auth, public, admin members, admin content, admin system
 app.use('/api', apiRouter);
 
 // Start SMS background scheduler
