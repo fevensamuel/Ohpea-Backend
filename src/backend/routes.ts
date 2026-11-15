@@ -212,50 +212,49 @@ apiRouter.get('/public/site-settings', async (req: Request, res: Response) => {
   return res.json({ success: true, data: settings });
 });
 
-// GET /public/stats
-apiRouter.get('/public/stats', async (req: Request, res: Response) => {
+// GET /public/lookups/regions
+apiRouter.get('/public/lookups/regions', async (req: Request, res: Response) => {
   try {
-    // Active members count
-    const membersResult = await query(
-      `SELECT COUNT(*)::int AS total FROM members WHERE membership_status = 'active'`
+    const result = await query(
+      'SELECT * FROM regions WHERE is_active = true ORDER BY sort_order ASC'
     );
-    const totalMembers = membersResult.rows[0]?.total ?? 0;
+    return res.json({ success: true, data: result.rows.map(mapRow) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    // Other counters from site_settings
-    const settingsResult = await query(
-      `SELECT key, value FROM site_settings WHERE key IN
-        ('stats.accreditedHotels', 'stats.certifiedGuides', 'stats.trainingGraduates')`
+// GET /public/lookups/fields
+apiRouter.get('/public/lookups/fields', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT * FROM lookup_fields_of_study WHERE is_active = true ORDER BY sort_order ASC'
     );
-    const settingsMap = Object.fromEntries(
-      settingsResult.rows.map((r: any) => {
-        let val = r.value;
-        if (typeof val === 'string') {
-          try {
-            val = JSON.parse(val);
-          } catch {
-            // keep raw
-          }
-        }
-        return [r.key, val];
-      })
+    return res.json({ success: true, data: result.rows.map(mapRow) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /public/lookups/graduation-levels
+apiRouter.get('/public/lookups/graduation-levels', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT * FROM lookup_graduation_levels WHERE is_active = true ORDER BY sort_order ASC'
     );
+    return res.json({ success: true, data: result.rows.map(mapRow) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    const toInt = (v: unknown, fallback = 0): number => {
-      if (v === null || v === undefined) return fallback;
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.trunc(n) : fallback;
-    };
-
-    const data = {
-      totalMembers: toInt(totalMembers, 0),
-      accreditedHotels: toInt(settingsMap['stats.accreditedHotels'], 0),
-      certifiedGuides: toInt(settingsMap['stats.certifiedGuides'], 0),
-      trainingGraduates: toInt(settingsMap['stats.trainingGraduates'], 0),
-    };
-
-    res.setHeader('X-Contract-Version', '1');
-    res.setHeader('Cache-Control', 'public, max-age=60');
-    return res.json({ success: true, data });
+// GET /public/lookups/sectors
+apiRouter.get('/public/lookups/sectors', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT * FROM lookup_sectors WHERE is_active = true ORDER BY sort_order ASC'
+    );
+    return res.json({ success: true, data: result.rows.map(mapRow) });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
