@@ -214,8 +214,51 @@ apiRouter.get('/public/site-settings', async (req: Request, res: Response) => {
 
 // GET /public/stats
 apiRouter.get('/public/stats', async (req: Request, res: Response) => {
-  const stats = await statsService.getPublicStats();
-  return res.json({ success: true, data: stats });
+  try {
+    // Active members count
+    const membersResult = await query(
+      `SELECT COUNT(*)::int AS total FROM members WHERE membership_status = 'active'`
+    );
+    const totalMembers = membersResult.rows[0]?.total ?? 0;
+
+    // Other counters from site_settings
+    const settingsResult = await query(
+      `SELECT key, value FROM site_settings WHERE key IN
+        ('stats.accreditedHotels', 'stats.certifiedGuides', 'stats.trainingGraduates')`
+    );
+    const settingsMap = Object.fromEntries(
+      settingsResult.rows.map((r: any) => {
+        let val = r.value;
+        if (typeof val === 'string') {
+          try {
+            val = JSON.parse(val);
+          } catch {
+            // keep raw
+          }
+        }
+        return [r.key, val];
+      })
+    );
+
+    const toInt = (v: unknown, fallback = 0): number => {
+      if (v === null || v === undefined) return fallback;
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.trunc(n) : fallback;
+    };
+
+    const data = {
+      totalMembers: toInt(totalMembers, 0),
+      accreditedHotels: toInt(settingsMap['stats.accreditedHotels'], 0),
+      certifiedGuides: toInt(settingsMap['stats.certifiedGuides'], 0),
+      trainingGraduates: toInt(settingsMap['stats.trainingGraduates'], 0),
+    };
+
+    res.setHeader('X-Contract-Version', '1');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    return res.json({ success: true, data });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // GET /public/activities
