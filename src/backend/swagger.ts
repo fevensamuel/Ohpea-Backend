@@ -1,18 +1,18 @@
 /**
- * Comprehensive OpenAPI 3.0.3 Specification for OHPEA System
+ * Comprehensive OpenAPI 3.0.3 Specification for OPHEA System
  * Covers every endpoint across Public, Auth, Admin Members, Payments, Dashboard, Content, SMS, Users, and Audit.
  */
 
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
-    title: 'OHPEA REST API Backend',
+    title: 'OPHEA REST API Backend',
     version: '1.0.0',
     description:
-      'Headless REST API backend for the Oromia Hospitality & Tourism Professionals Association (OHPEA). Powers the public registration & information website and the administrative member-management portal.',
+      'Headless REST API backend for the Oromia Hospitality & Tourism Professionals Association (OPHEA). Powers the public registration & information website and the administrative member-management portal.',
     contact: {
-      name: 'OHPEA Technical Administration',
-      email: 'support@ohpea.org',
+      name: 'OPHEA Technical Administration',
+      email: 'support@ophea.org',
     },
   },
   servers: [
@@ -68,7 +68,7 @@ export const openApiSpec = {
         type: 'object',
         required: ['usernameOrEmail', 'password'],
         properties: {
-          usernameOrEmail: { type: 'string', example: 'admin@ohpea.org' },
+          usernameOrEmail: { type: 'string', example: 'admin@ophea.org' },
           password: { type: 'string', example: 'Admin12345!ChangeMe' },
         },
       },
@@ -81,8 +81,8 @@ export const openApiSpec = {
             properties: {
               id: { type: 'string', example: '9a21b4fe-...' },
               username: { type: 'string', example: 'superadmin' },
-              email: { type: 'string', example: 'admin@ohpea.org' },
-              fullName: { type: 'string', example: 'OHPEA Central Administrator' },
+              email: { type: 'string', example: 'admin@ophea.org' },
+              fullName: { type: 'string', example: 'OPHEA Central Administrator' },
               role: { type: 'string', enum: ['SuperAdmin', 'RegionalAdmin', 'Finance', 'Editor'], example: 'SuperAdmin' },
               permissions: { type: 'array', items: { type: 'string' } },
               regionId: { type: 'string', nullable: true },
@@ -147,7 +147,7 @@ export const openApiSpec = {
         required: ['name', 'message'],
         properties: {
           name: { type: 'string', example: 'Annual General Meeting Invitation' },
-          message: { type: 'string', example: 'Dear {{fullName}}, your OHPEA member number is {{memberNo}}. Please attend the upcoming summit.' },
+          message: { type: 'string', example: 'Dear {{fullName}}, your OPHEA member number is {{memberNo}}. Please attend the upcoming summit.' },
           audienceFilter: {
             type: 'object',
             properties: {

@@ -1,30 +1,16 @@
+/**
+ * Public registration -> creates a PENDING member (visible in the admin "Pending registrations").
+ * Accepts both the canonical contract field names and the field names used by the public website form.
+ */
+
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { getPool, query } from '../../backend/database.js';
+import { getPool, query, hashIdNumber, dbOperations } from '../../backend/database.js';
 import { PRIVATE_UPLOAD_PATH } from '../../config/multer.js';
+import { normalizeEthiopianPhone, ETHIOPIAN_MOBILE } from '../../utils/phone.js';
 
-export interface RegistrationInput {
-  fullName?: string;
-  email?: string;
-  phone?: string;
-  gender?: string;
-  dateOfBirth?: string;
-  membershipCategory?: string;
-  nationality?: string;
-  emergencyContactName?: string;
-  emergencyContactPhone?: string;
-  businessTin?: string;
-  skills?: string;
-  expertiseAreas?: string[] | string;
-  interests?: string[] | string;
-  qualification?: string;
-  fieldOfStudy?: string;
-  organization?: string;
-  zone?: string;
-  idType?: string;
-  idNumber?: string;
-}
+export type RegistrationInput = Record<string, any>;
 
 export class DuplicateRegistrationError extends Error {
   constructor() {
@@ -33,287 +19,264 @@ export class DuplicateRegistrationError extends Error {
   }
 }
 
-function isStringArrayInput(value: unknown): boolean {
-  if (value === undefined || value === null || value === '') return true;
-  if (Array.isArray(value)) return value.every((item) => typeof item === 'string');
-  if (typeof value !== 'string') return false;
-
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (Array.isArray(parsed)) return parsed.every((item) => typeof item === 'string');
-  } catch {
-    // Multipart clients may submit these fields as comma-separated strings.
+export class RegistrationValidationError extends Error {
+  fields: Record<string, string>;
+  constructor(fields: Record<string, string>) {
+    super('Validation failed');
+    this.name = 'RegistrationValidationError';
+    this.fields = fields;
   }
-  return true;
 }
 
-function toStringArray(value: string[] | string | undefined): string[] {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.map((item) => item.trim()).filter(Boolean);
-
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (Array.isArray(parsed) && parsed.every((item) => typeof item === 'string')) {
-      return parsed.map((item) => item.trim()).filter(Boolean);
-    }
-  } catch {
-    // Treat ordinary multipart text as a comma-separated list.
-  }
-  return value.split(',').map((item) => item.trim()).filter(Boolean);
+export interface UploadedDoc {
+  file: Express.Multer.File;
+  kind: 'id' | 'credential' | 'cv';
 }
 
+const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim());
+const first = (b: RegistrationInput, ...keys: string[]): string => {
+  for (const k of keys) {
+    const v = text(b[k]);
+    if (v) return v;
+  }
+  return '';
+};
+
+function toList(value: unknown): string[] {
+  if (value === undefined || value === null || value === '') return [];
+  if (Array.isArray(value)) return value.map((x) => text(x)).filter(Boolean);
+  const raw = text(value);
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) return parsed.map((x) => text(x)).filter(Boolean);
+  } catch {
+    /* comma separated */
+  }
+  return raw.split(',').map((x) => x.trim()).filter(Boolean);
+}
+
+const ALLOWED_CATEGORIES = ['Professional', 'Entrepreneur', 'Corporate', 'Associate'];
+const ALLOWED_ID_TYPES = ['fayda', 'passport', 'kebele', 'driver'];
+const ALLOWED_MIMES = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+
+export function isPhoneOtpRequired(): boolean {
+  return process.env.FEATURE_PHONE_OTP === 'true';
+}
+
+/** Synchronous field validation. Returns field -> message. */
 export function validateRegistrationInput(
   body: RegistrationInput,
   idDocumentFile?: Express.Multer.File
 ): { isValid: boolean; fields: Record<string, string> } {
   const fields: Record<string, string> = {};
 
-  const fullName = (body.fullName || '').trim();
-  if (!fullName || fullName.length < 2 || fullName.length > 120) {
-    fields.fullName = 'Full name is required and must be between 2 and 120 characters';
-  }
+  const fullName = text(body.fullName);
+  if (fullName.length < 2 || fullName.length > 120) fields.fullName = 'Full name is required (2-120 characters)';
 
-  const phone = (body.phone || '').trim();
-  const ethiopianPhoneRegex = /^\+251(9|7)\d{8}$/;
-  if (!phone || !ethiopianPhoneRegex.test(phone)) {
-    fields.phone = 'must be a valid Ethiopian number (+2519... or +2517...)';
-  }
+  const phone = normalizeEthiopianPhone(text(body.phone));
+  if (!ETHIOPIAN_MOBILE.test(phone)) fields.phone = 'Enter a valid Ethiopian mobile number (+2519... or +2517...)';
 
-  if (body.email && body.email.trim()) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(body.email.trim())) {
-      fields.email = 'Invalid email address';
+  const email = text(body.email);
+  if (!email) fields.email = 'Email is required';
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fields.email = 'Invalid email address';
+
+  const gender = text(body.gender).toLowerCase();
+  if (gender && !['male', 'female', 'unspecified'].includes(gender)) fields.gender = 'Gender must be male, female or unspecified';
+
+  const category = text(body.membershipCategory);
+  if (category && !ALLOWED_CATEGORIES.includes(category)) fields.membershipCategory = `Must be one of: ${ALLOWED_CATEGORIES.join(', ')}`;
+
+  const dob = text(body.dateOfBirth);
+  if (dob) {
+    const parsed = new Date(`${dob}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dob) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== dob) {
+      fields.dateOfBirth = 'Use a valid date (YYYY-MM-DD)';
     }
   }
 
-  const allowedGenders = ['male', 'female', 'unspecified'];
-  if (body.gender && !allowedGenders.includes(body.gender.trim().toLowerCase())) {
-    fields.gender = 'gender must be one of: male, female, unspecified';
-  }
+  const idNumber = first(body, 'idNumber', 'nationalId');
+  if (!idNumber) fields.idNumber = 'ID number is required';
+  const idType = first(body, 'idType').toLowerCase() || 'fayda';
+  if (!ALLOWED_ID_TYPES.includes(idType)) fields.idType = `Must be one of: ${ALLOWED_ID_TYPES.join(', ')}`;
 
-  const allowedMembershipCategories = ['Professional', 'Entrepreneur', 'Corporate', 'Associate'];
-  if (body.membershipCategory && !allowedMembershipCategories.includes(body.membershipCategory.trim())) {
-    fields.membershipCategory = 'membershipCategory must be one of: Professional, Entrepreneur, Corporate, Associate';
-  }
+  if (!first(body, 'regionId', 'region')) fields.region = 'Region is required';
 
-  if (body.dateOfBirth) {
-    const dateOfBirth = body.dateOfBirth.trim();
-    const parsedDate = new Date(`${dateOfBirth}T00:00:00.000Z`);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) ||
-      Number.isNaN(parsedDate.getTime()) ||
-      parsedDate.toISOString().slice(0, 10) !== dateOfBirth) {
-      fields.dateOfBirth = 'dateOfBirth must be a valid date in YYYY-MM-DD format';
+  const consent = first(body, 'consent', 'declaration').toLowerCase();
+  if (consent !== 'true' && consent !== 'on' && consent !== '1') fields.consent = 'You must accept the declaration';
+
+  if (!idDocumentFile) fields.idDocument = 'ID document file is required (PDF, JPG or PNG, max 5MB)';
+  else if (!ALLOWED_MIMES.includes(idDocumentFile.mimetype)) fields.idDocument = 'Only PDF, JPG and PNG files are accepted';
+
+  return { isValid: Object.keys(fields).length === 0, fields };
+}
+
+/** Find a lookup row id by id, code or English label (case-insensitive). */
+async function resolveLookup(table: string, value: string): Promise<string | null> {
+  if (!value) return null;
+  const res = await query(`SELECT id, code, label FROM ${table}`);
+  const v = value.toLowerCase();
+  for (const row of res.rows) {
+    let label: any = row.label;
+    if (typeof label === 'string') {
+      try { label = JSON.parse(label); } catch { label = { en: label }; }
+    }
+    if (String(row.id).toLowerCase() === v || String(row.code).toLowerCase() === v || String(label?.en || '').toLowerCase() === v) {
+      return row.id;
     }
   }
+  return null;
+}
 
-  if (!isStringArrayInput(body.expertiseAreas)) {
-    fields.expertiseAreas = 'expertiseAreas must be an array of strings';
-  }
-  if (!isStringArrayInput(body.interests)) {
-    fields.interests = 'interests must be an array of strings';
-  }
-
-  const allowedIdTypes = ['fayda', 'passport', 'kebele', 'driver'];
-  const idType = (body.idType || '').trim().toLowerCase();
-  if (!idType || !allowedIdTypes.includes(idType)) {
-    fields.idType = 'idType must be one of: fayda, passport, kebele, driver';
-  }
-
-  const idNumber = (body.idNumber || '').trim();
-  if (!idNumber) {
-    fields.idNumber = 'idNumber is required';
-  }
-
-  if (!idDocumentFile) {
-    fields.idDocument = 'ID document file is required (PDF, JPG, or PNG under 5MB)';
-  } else {
-    const allowedMimes = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
-    if (!allowedMimes.includes(idDocumentFile.mimetype)) {
-      fields.idDocument = 'Only PDF, JPG, and PNG files are accepted';
+async function resolveRegion(value: string): Promise<string | null> {
+  const res = await query('SELECT id, name FROM regions WHERE is_active = true');
+  const v = value.toLowerCase();
+  for (const row of res.rows) {
+    let name: any = row.name;
+    if (typeof name === 'string') {
+      try { name = JSON.parse(name); } catch { name = { en: name }; }
     }
+    const names = [name?.en, name?.om, name?.am].filter(Boolean).map((x: string) => x.toLowerCase());
+    if (String(row.id).toLowerCase() === v || String(row.id).toLowerCase() === `reg-${v}` || names.includes(v)) return row.id;
   }
+  return null;
+}
 
-  return {
-    isValid: Object.keys(fields).length === 0,
-    fields,
-  };
+async function assertPhoneVerified(phone: string): Promise<void> {
+  const res = await query('SELECT verified_for_phone_at AS verified_at FROM otp_codes WHERE phone = $1', [phone]);
+  const at = res.rows[0]?.verified_at ? new Date(res.rows[0].verified_at).getTime() : 0;
+  if (!at || Date.now() - at > 15 * 60 * 1000) {
+    throw new RegistrationValidationError({ phone: 'Please verify this phone number with the SMS code first' });
+  }
 }
 
 export async function processRegistrationFilesAndSave(
   body: RegistrationInput,
   idDocumentFile: Express.Multer.File,
-  credentialFiles: Express.Multer.File[] = []
+  extraDocs: UploadedDoc[] = []
 ): Promise<{ memberId: string; memberNo: string }> {
+  const phone = normalizeEthiopianPhone(text(body.phone));
+  const email = text(body.email).toLowerCase();
+  const idType = first(body, 'idType').toLowerCase() || 'fayda';
+  const idNumber = first(body, 'idNumber', 'nationalId');
+
+  // Resolve lookups (real rows only; nothing is defaulted)
+  const errors: Record<string, string> = {};
+  const regionId = await resolveRegion(first(body, 'regionId', 'region'));
+  if (!regionId) errors.region = 'Unknown region';
+
+  const gradInput = first(body, 'graduationLevelId', 'highestQualification');
+  const graduationLevelId = gradInput ? await resolveLookup('lookup_graduation_levels', gradInput) : null;
+  if (gradInput && !graduationLevelId) errors.highestQualification = 'Unknown qualification';
+
+  const fieldInput = first(body, 'fieldOfStudyId', 'fieldOfStudy');
+  const fieldOfStudyId = fieldInput ? await resolveLookup('lookup_fields_of_study', fieldInput) : null;
+  if (fieldInput && !fieldOfStudyId) errors.fieldOfStudy = 'Unknown field of study';
+
+  const subSectors = toList(body.industrySubSectors);
+  const sectorInput = first(body, 'sectorId') || subSectors[0] || '';
+  const sectorId = sectorInput ? await resolveLookup('lookup_sectors', sectorInput) : null;
+
+  const occ = first(body, 'occupationType').toLowerCase();
+  const occupationType = ['private', 'government', 'other'].includes(occ) ? occ : null;
+
+  if (Object.keys(errors).length) throw new RegistrationValidationError(errors);
+  if (isPhoneOtpRequired()) await assertPhoneVerified(phone);
+
+  const memberId = crypto.randomUUID();
+  const memberDir = path.join(PRIVATE_UPLOAD_PATH, 'members', memberId);
+  const docs: UploadedDoc[] = [{ file: idDocumentFile, kind: 'id' }, ...extraDocs];
+
   const pool = await getPool();
   const client = await pool.connect();
-  const memberId = crypto.randomUUID();
-  const year = new Date().getFullYear();
-  let memberDir: string | undefined;
-  let transactionStarted = false;
-
+  let started = false;
   try {
-    await client.query('BEGIN');
-    transactionStarted = true;
-
-    const idType = body.idType?.trim().toLowerCase() || 'fayda';
-    const idNumber = body.idNumber?.trim() || '';
-    const pepper = process.env.SERVER_PEPPER || 'ohpea_pepper_2026';
-    const idHash = crypto.createHash('sha256').update(`${idType}:${idNumber}:${pepper}`).digest('hex');
-    const email = body.email?.trim().toLowerCase() || null;
-    const duplicate = await client.query(
-      `SELECT id FROM members
-       WHERE phone = $1 OR ($2::text IS NOT NULL AND email = $2) OR id_number_hash = $3
-       LIMIT 1`,
-      [body.phone?.trim() || '', email, idHash]
+    const dup = await client.query(
+      `SELECT id FROM members WHERE phone = $1 OR LOWER(email) = $2 OR id_number_hash = $3 LIMIT 1`,
+      [phone, email, hashIdNumber(idType, idNumber)]
     );
-    if (duplicate.rows.length > 0) {
-      throw new DuplicateRegistrationError();
-    }
+    if (dup.rows.length > 0) throw new DuplicateRegistrationError();
 
-    const memberCount = await client.query(
-      `SELECT COUNT(*)::int AS count FROM members WHERE member_no LIKE $1`,
-      [`OHPEA-${year}-%`]
-    );
-    const memberNo = `OHPEA-${year}-${String(Number(memberCount.rows[0].count) + 1).padStart(5, '0')}`;
-    const memberEmail = email || `${memberNo.toLowerCase()}@ohpea.org`;
-
-    memberDir = path.join(PRIVATE_UPLOAD_PATH, 'members', memberId);
     fs.mkdirSync(memberDir, { recursive: true });
+    await client.query('BEGIN');
+    started = true;
 
-    const documentFiles = [
-      { file: idDocumentFile, kind: 'id' },
-      ...credentialFiles.map((file) => ({ file, kind: 'credential' })),
-    ];
+    const memberNo = await dbOperations.getNextMemberNumber();
+    const yearEstablished = parseInt(text(body.yearEstablished), 10);
 
     await client.query(
       `INSERT INTO members (
         id, member_no, full_name, phone, email, gender, date_of_birth,
         membership_category, nationality, business_tin, skills, expertise_areas, interests,
         emergency_contact_name, emergency_contact_phone,
+        employment_status, year_established, zone_sub_city, woreda, institution_name,
         graduation_level_id, occupation_type, sector_id, field_of_study_id,
-        professional_category, organization_name, region_id, town,
-        id_type, id_number_hash, id_number_last4, registration_status, membership_status, source,
-        created_at, updated_at
+        professional_category, organization_name, job_title, region_id, town,
+        id_type, id_number_hash, id_number_last4, registration_status, membership_status,
+        preferred_language, source, phone_verified_at, consent_at, created_at, updated_at
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7,
-        $8, $9, $10, $11, $12, $13,
-        $14, $15,
-        'grad-first_degree', 'private', 'sec-other', 'fos-other',
-        $16, $17, 'reg-east-shewa', $18,
-        $19, $20, $21, 'pending', 'pending', 'online',
-        NOW(), NOW()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'pending','pending',$33,'online',$34,NOW(),NOW(),NOW()
       )`,
       [
         memberId,
         memberNo,
-        body.fullName?.trim() || '',
-        body.phone?.trim() || '',
-        memberEmail,
-        body.gender?.trim().toLowerCase() || 'unspecified',
-        body.dateOfBirth?.trim() || null,
-        body.membershipCategory?.trim() || null,
-        body.nationality?.trim() || null,
-        body.businessTin?.trim() || null,
-        body.skills?.trim() || null,
-        toStringArray(body.expertiseAreas),
-        toStringArray(body.interests),
-        body.emergencyContactName?.trim() || null,
-        body.emergencyContactPhone?.trim() || null,
-        body.qualification?.trim() || null,
-        body.organization?.trim() || null,
-        body.zone?.trim() || 'Adama',
+        text(body.fullName),
+        phone,
+        email,
+        text(body.gender).toLowerCase() || 'unspecified',
+        text(body.dateOfBirth) || null,
+        text(body.membershipCategory) || null,
+        text(body.nationality) || null,
+        text(body.businessTin) || null,
+        first(body, 'skills', 'coreSkills') || null,
+        toList(body.expertiseAreas ?? body.areasOfExpertise),
+        toList(body.interests ?? body.areasOfInterest),
+        text(body.emergencyContactName) || null,
+        text(body.emergencyContactPhone) || null,
+        text(body.employmentStatus) || null,
+        Number.isFinite(yearEstablished) ? yearEstablished : null,
+        text(body.zoneSubCity) || null,
+        text(body.woreda) || null,
+        text(body.institutionName) || null,
+        graduationLevelId,
+        occupationType,
+        sectorId,
+        fieldOfStudyId,
+        first(body, 'professionalCategory') || subSectors.join(', ') || null,
+        first(body, 'organizationName', 'organization') || null,
+        text(body.jobTitle) || null,
+        regionId,
+        first(body, 'town', 'cityTown') || null,
         idType,
-        idHash,
-        idNumber.slice(-4) || '0000',
+        hashIdNumber(idType, idNumber),
+        idNumber.slice(-4),
+        ['en', 'om', 'am'].includes(text(body.preferredLanguage)) ? text(body.preferredLanguage) : 'en',
+        isPhoneOtpRequired() ? new Date().toISOString() : null,
       ]
     );
 
-    for (const [index, document] of documentFiles.entries()) {
-      const extension = path.extname(document.file.originalname).toLowerCase() || '.bin';
-      const storedName = `${document.kind}-${index + 1}-${crypto.randomBytes(6).toString('hex')}${extension}`;
-      const destinationPath = path.join(memberDir, storedName);
-      fs.renameSync(document.file.path, destinationPath);
-      const sha256 = crypto.createHash('sha256').update(fs.readFileSync(destinationPath)).digest('hex');
-
+    for (const [index, doc] of docs.entries()) {
+      const ext = path.extname(doc.file.originalname).toLowerCase() || '.bin';
+      const storedName = `${doc.kind}-${index + 1}-${crypto.randomBytes(6).toString('hex')}${ext}`;
+      const dest = path.join(memberDir, storedName);
+      fs.renameSync(doc.file.path, dest);
+      const sha256 = crypto.createHash('sha256').update(fs.readFileSync(dest)).digest('hex');
       await client.query(
-        `INSERT INTO member_documents (
-          id, member_id, kind, original_name, stored_name, mime, size, sha256, uploaded_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())`,
-        [
-          crypto.randomUUID(),
-          memberId,
-          document.kind,
-          document.file.originalname,
-          storedName,
-          document.file.mimetype,
-          document.file.size,
-          sha256,
-        ]
+        `INSERT INTO member_documents (id, member_id, kind, original_name, stored_name, mime, size, sha256, uploaded_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
+        [crypto.randomUUID(), memberId, doc.kind, doc.file.originalname, storedName, doc.file.mimetype, doc.file.size, sha256]
       );
     }
 
     await client.query('COMMIT');
-    transactionStarted = false;
+    started = false;
     return { memberId, memberNo };
   } catch (error) {
-    if (transactionStarted) {
-      await client.query('ROLLBACK');
-    }
-    if (memberDir) {
-      fs.rmSync(memberDir, { recursive: true, force: true });
-    }
+    if (started) await client.query('ROLLBACK');
+    fs.rmSync(memberDir, { recursive: true, force: true });
+    for (const d of docs) fs.rmSync(d.file.path, { force: true });
     throw error;
   } finally {
     client.release();
   }
-}
-
-/**
- * Internal helper to promote a verified registration into a member record.
- * Called by admin approval, NOT called automatically from registration routes.
- */
-export async function promoteRegistrationToMember(registrationId: string): Promise<string> {
-  const regRes = await query(`SELECT * FROM registrations WHERE id = $1`, [registrationId]);
-  if (regRes.rows.length === 0) {
-    throw new Error('Registration not found');
-  }
-
-  const reg = regRes.rows[0];
-  const memberId = crypto.randomUUID();
-  const year = new Date().getFullYear();
-  const randNum = Math.floor(Math.random() * 89999) + 10000;
-  const memberNo = `OHPEA-${year}-${randNum}`;
-
-  const pepper = process.env.SERVER_PEPPER || 'ohpea_default_pepper';
-  const idHash = crypto.createHash('sha256').update(`${reg.id_type}:${reg.id_number}:${pepper}`).digest('hex');
-  const idLast4 = reg.id_number.slice(-4) || '0000';
-
-  await query(
-    `INSERT INTO members (
-      id, member_no, full_name, phone, email, gender,
-      graduation_level_id, occupation_type, sector_id, field_of_study_id,
-      region_id, town, id_type, id_number_hash, id_number_last4,
-      registration_status, membership_status, created_at, updated_at
-    ) VALUES (
-      $1, $2, $3, $4, $5, 'unspecified',
-      'grad-first_degree', 'private', 'sec-other', 'fos-other',
-      'reg-east-shewa', $6, $7, $8, $9,
-      'approved', 'pending', NOW(), NOW()
-    )`,
-    [
-      memberId,
-      memberNo,
-      reg.full_name,
-      reg.phone,
-      reg.email || `${memberNo.toLowerCase()}@ohpea.org`,
-      reg.zone || 'Adama',
-      reg.id_type,
-      idHash,
-      idLast4,
-    ]
-  );
-
-  await query(`UPDATE registrations SET status = 'approved', updated_at = NOW() WHERE id = $1`, [registrationId]);
-
-  return memberId;
 }

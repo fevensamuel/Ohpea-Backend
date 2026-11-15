@@ -1,5 +1,5 @@
 /**
- * OHPEA API Smoke Test Script
+ * OPHEA API Smoke Test Script
  * Tests Health, Login, Public Lookups/Stats, Registration, Admin Member Management, and Swagger.
  */
 
@@ -8,7 +8,7 @@ import 'dotenv/config';
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';
 
 async function runSmokeTests() {
-  console.log(`[SmokeTest] Starting OHPEA API smoke tests against ${BASE_URL}...\n`);
+  console.log(`[SmokeTest] Starting OPHEA API smoke tests against ${BASE_URL}...\n`);
   let passed = 0;
   let failed = 0;
 
@@ -62,7 +62,7 @@ async function runSmokeTests() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        usernameOrEmail: process.env.SEED_ADMIN_EMAIL || 'admin@ohpea.org',
+        usernameOrEmail: process.env.SEED_ADMIN_EMAIL || 'admin@ophea.org',
         password: process.env.SEED_ADMIN_PASSWORD || 'Admin12345!ChangeMe',
       }),
     });

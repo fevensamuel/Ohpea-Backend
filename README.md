@@ -1,6 +1,6 @@
-# OHPEA REST API Backend & Member Management System
+# OPHEA REST API Backend & Member Management System
 
-Backend REST API for the **Oromia Hospitality & Tourism Professionals Association (OHPEA)**.
+Backend REST API for the **Oromia Hospitality & Tourism Professionals Association (OPHEA)**.
 The system replaces manual, unorganized records with a secure database serving two client fronts:
 1. Public association website (information, programs, announcements, member registration)
 2. Admin management portal (member verification, approvals/rejections, contribution tracking, statistics, SMS campaigns, content management)
@@ -24,7 +24,7 @@ The system replaces manual, unorganized records with a secure database serving t
 
 ## 2. Folder Structure
 ```
-ohpea-api/
+ophea-api/
   server.ts                      # Server bootstrap, CORS, Helmet, static uploads, health & error handling
   package.json                   # Dependencies, dev/build/start/smoke scripts
   tsconfig.json                  # TypeScript configuration
@@ -59,24 +59,24 @@ ohpea-api/
 ```ini
 PORT=3000
 NODE_ENV=development
-DATABASE_URL=postgres://user:pass@localhost:5432/ohpea
+DATABASE_URL=postgres://user:pass@localhost:5432/ophea
 DATABASE_SSL=false
-JWT_SECRET=super_secure_jwt_secret_key_ohpea_2026_at_least_32_chars
+JWT_SECRET=super_secure_jwt_secret_key_ophea_2026_at_least_32_chars
 JWT_EXPIRES_IN=8h
-SERVER_PEPPER=ohpea_pepper_duplicate_detection_key_2026
+SERVER_PEPPER=ophea_pepper_duplicate_detection_key_2026
 ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:3000
 UPLOAD_PATH=./uploads
 PRIVATE_UPLOAD_PATH=./private_uploads
-SEED_ADMIN_EMAIL=admin@ohpea.org
+SEED_ADMIN_EMAIL=admin@ophea.org
 SEED_ADMIN_PASSWORD=Admin12345!ChangeMe
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER=no-reply@ohpea.org
+SMTP_USER=no-reply@ophea.org
 SMTP_PASS=
-SMTP_FROM="OHPEA <no-reply@ohpea.org>"
+SMTP_FROM="OPHEA <no-reply@ophea.org>"
 AFROMESSAGE_TOKEN=
 AFROMESSAGE_IDENTIFIER_ID=
-AFROMESSAGE_SENDER_NAME=OHPEA
+AFROMESSAGE_SENDER_NAME=OPHEA
 OTP_TTL_MINUTES=10
 OTP_MAX_ATTEMPTS=5
 FEATURE_EMAIL_OTP=false
@@ -112,11 +112,11 @@ SEED_DEMO_DATA=true
 6. Set Start Command: `npm run start`
 
 ### Option B: VPS (Ubuntu / Debian + Systemd / Docker)
-1. Clone repository to `/var/www/ohpea-api`.
+1. Clone repository to `/var/www/ophea-api`.
 2. Copy `.env.example` to `.env` and fill production secrets.
 3. Install dependencies: `npm install --omit=dev`.
 4. Build bundle: `npm run build`.
-5. Setup PM2: `pm2 start dist/server.cjs --name ohpea-api`.
+5. Setup PM2: `pm2 start dist/server.cjs --name ophea-api`.
 
 ---
 
@@ -131,7 +131,7 @@ curl -X GET http://localhost:3000/health
 ```bash
 curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"usernameOrEmail":"admin@ohpea.org","password":"Admin12345!ChangeMe"}'
+  -d '{"usernameOrEmail":"admin@ophea.org","password":"Admin12345!ChangeMe"}'
 ```
 
 ### 3. Public Lookups

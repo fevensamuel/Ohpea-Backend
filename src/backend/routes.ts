@@ -1,3 +1,10 @@
+/**
+ * OPHEA REST API Routes
+ * Implements Auth, Public, Admin Member Management, Payments, Content CMS, SMS, and Dashboard endpoints.
+ */
+
+import { adminContentRouter } from './adminContentRoutes.js';
+import { toAdminUserDto, getLang, loadPaymentInfo, toMemberSummaryDto, toMemberDetailDto, normalizeMemberBody, toPaymentDto, toRecentActivityDto } from './adminDto.js';
 import express, { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -17,7 +24,7 @@ import {
   getJwtSecret,
 } from './middleware.js';
 
-import { query, mapRow, dbOperations } from './database.js';
+import { query, mapRow, dbOperations, hashIdNumber } from './database.js';
 import { statsService } from '../services/statsService.js';
 import { emailService } from '../services/emailService.js';
 import { afroSmsService } from '../services/afroSmsService.js';
@@ -50,6 +57,14 @@ apiRouter.use(
   })
 );
 
+async function loadAdminUserDto(id: string, lang: any) {
+  const r = await query(
+    'SELECT u.*, r.name AS region_name FROM admin_users u LEFT JOIN regions r ON u.region_id = r.id WHERE u.id = $1',
+    [id]
+  );
+  return r.rows[0] ? toAdminUserDto(mapRow(r.rows[0]), lang) : null;
+}
+
 /* ==========================================================================
    1. AUTHENTICATION ROUTES
    ========================================================================== */
@@ -66,6 +81,7 @@ const loginRateLimiter = customRateLimiter({
   keyGenerator: (req) => `login:${req.ip || '127.0.0.1'}`,
 });
 
+// POST /auth/login & alias /admin/login
 const handleLogin = async (req: Request, res: Response) => {
   const { usernameOrEmail, password } = req.body;
   const admin = await dbOperations.getAdminByUsernameOrEmail(usernameOrEmail);
@@ -123,16 +139,7 @@ const handleLogin = async (req: Request, res: Response) => {
     success: true,
     data: {
       token,
-      user: {
-        id: admin.id,
-        username: admin.username,
-        email: admin.email,
-        fullName: admin.fullName,
-        role: admin.role,
-        permissions: admin.permissions,
-        regionId: admin.regionId,
-        mustChangePassword: admin.mustChangePassword,
-      },
+      user: await loadAdminUserDto(admin.id, getLang(req)),
     },
   });
 };
@@ -140,10 +147,12 @@ const handleLogin = async (req: Request, res: Response) => {
 apiRouter.post('/auth/login', loginRateLimiter, validateBody(loginSchema), handleLogin);
 apiRouter.post('/admin/login', loginRateLimiter, validateBody(loginSchema), handleLogin);
 
-apiRouter.get('/auth/me', authenticateJWT, loadAdminContext, (req: Request, res: Response) => {
-  return res.json({ success: true, data: req.admin });
+// GET /auth/me
+apiRouter.get('/auth/me', authenticateJWT, loadAdminContext, async (req: Request, res: Response) => {
+  return res.json({ success: true, data: await loadAdminUserDto(req.admin!.id, getLang(req)) });
 });
 
+// POST /auth/change-password
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(6),
   newPassword: z.string().min(8, 'New password must be at least 8 characters long'),
@@ -178,6 +187,7 @@ apiRouter.post(
   }
 );
 
+// POST /auth/logout
 apiRouter.post('/auth/logout', authenticateJWT, async (req: Request, res: Response) => {
   if (req.user) {
     await dbOperations.createAuditLog({
@@ -192,1017 +202,313 @@ apiRouter.post('/auth/logout', authenticateJWT, async (req: Request, res: Respon
 });
 
 /* ==========================================================================
-   2. PUBLIC ENDPOINTS (No auth, rate-limited)
-   ========================================================================== */
-
-// GET /public/site-settings
-apiRouter.get('/public/site-settings', async (req: Request, res: Response) => {
-  const result = await query('SELECT key, value FROM site_settings');
-  const settings: Record<string, any> = {};
-  for (const row of result.rows) {
-    settings[row.key] = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-  }
-  return res.json({ success: true, data: settings });
-});
-
-// GET /public/stats
-apiRouter.get('/public/stats', async (req: Request, res: Response) => {
-  try {
-    const membersResult = await query(
-      `SELECT COUNT(*)::int AS total FROM members WHERE membership_status = 'active'`
-    );
-    const totalMembers = membersResult.rows[0]?.total ?? 0;
-
-    const settingsResult = await query(
-      `SELECT key, value FROM site_settings WHERE key IN
-        ('stats.accreditedHotels', 'stats.certifiedGuides', 'stats.trainingGraduates')`
-    );
-    const settingsMap = Object.fromEntries(
-      settingsResult.rows.map((r: any) => {
-        let val = r.value;
-        if (typeof val === 'string') {
-          try { val = JSON.parse(val); } catch { /* keep raw */ }
-        }
-        return [r.key, val];
-      })
-    );
-
-    const toInt = (v: unknown, fallback = 0): number => {
-      if (v === null || v === undefined) return fallback;
-      const n = Number(v);
-      return Number.isFinite(n) ? Math.trunc(n) : fallback;
-    };
-
-    const data = {
-      totalMembers: toInt(totalMembers, 0),
-      accreditedHotels: toInt(settingsMap['stats.accreditedHotels'], 0),
-      certifiedGuides: toInt(settingsMap['stats.certifiedGuides'], 0),
-      trainingGraduates: toInt(settingsMap['stats.trainingGraduates'], 0),
-    };
-
-    res.setHeader('X-Contract-Version', '1');
-    res.setHeader('Cache-Control', 'public, max-age=60');
-    return res.json({ success: true, data });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /public/activities
-apiRouter.get('/public/activities', async (req: Request, res: Response) => {
-  const limit = Math.min(50, Math.max(1, parseInt(String(req.query.limit || '10'), 10)));
-  const result = await query(
-    'SELECT * FROM activities WHERE is_public = true ORDER BY activity_date DESC LIMIT $1',
-    [limit]
-  );
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-// GET /public/partners
-apiRouter.get('/public/partners', async (req: Request, res: Response) => {
-  const result = await query(
-    'SELECT * FROM partners WHERE is_active = true ORDER BY sort_order ASC'
-  );
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-// GET /public/objectives
-apiRouter.get('/public/objectives', async (req: Request, res: Response) => {
-  const kind = req.query.kind as string;
-  let sql = 'SELECT * FROM objectives';
-  const params: any[] = [];
-  if (kind) {
-    sql += ' WHERE kind = $1';
-    params.push(kind);
-  }
-  sql += ' ORDER BY sort_order ASC';
-  const result = await query(sql, params);
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-// GET /public/programs
-apiRouter.get('/public/programs', async (req: Request, res: Response) => {
-  const result = await query(
-    'SELECT * FROM programs WHERE is_active = true ORDER BY sort_order ASC'
-  );
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-// GET /public/programs/:slug
-apiRouter.get('/public/programs/:slug', async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM programs WHERE slug = $1 AND is_active = true', [req.params.slug]);
-  if (!result.rows[0]) {
-    return res.status(404).json({ success: false, error: 'Program not found' });
-  }
-  return res.json({ success: true, data: mapRow(result.rows[0]) });
-});
-
-// GET /public/announcements
-apiRouter.get('/public/announcements', async (req: Request, res: Response) => {
-  const { type, q, when, includeClosed } = req.query;
-  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10));
-  const pageSize = Math.min(50, Math.max(1, parseInt(String(req.query.pageSize || '10'), 10)));
-  const offset = (page - 1) * pageSize;
-
-  const conditions = ["status = 'published'"];
-  const params: any[] = [];
-  let idx = 1;
-
-  if (type) {
-    conditions.push(`type = $${idx}`);
-    params.push(type);
-    idx++;
-  }
-
-  if (q) {
-    conditions.push(`(title::text ILIKE $${idx} OR summary::text ILIKE $${idx})`);
-    params.push(`%${q}%`);
-    idx++;
-  }
-
-  if (when === 'upcoming') {
-    conditions.push(`(event_start_at >= NOW() OR deadline >= CURRENT_DATE)`);
-  } else if (when === 'past') {
-    conditions.push(`(event_end_at < NOW() OR (event_end_at IS NULL AND deadline < CURRENT_DATE))`);
-  } else if (includeClosed !== '1') {
-    conditions.push(`(deadline IS NULL OR deadline >= CURRENT_DATE)`);
-  }
-
-  const whereSql = `WHERE ${conditions.join(' AND ')}`;
-
-  const countRes = await query(`SELECT count(*) as total FROM announcements ${whereSql}`, params);
-  const total = parseInt(countRes.rows[0].total, 10);
-
-  const listRes = await query(
-    `SELECT * FROM announcements ${whereSql} ORDER BY created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
-    [...params, pageSize, offset]
-  );
-
-  return res.json({
-    success: true,
-    data: listRes.rows.map(mapRow),
-    meta: {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.ceil(total / pageSize) || 1,
-    },
-  });
-});
-
-// GET /public/announcements/:slug
-apiRouter.get('/public/announcements/:slug', async (req: Request, res: Response) => {
-  const result = await query(
-    "SELECT * FROM announcements WHERE slug = $1 AND status = 'published'",
-    [req.params.slug]
-  );
-  if (!result.rows[0]) {
-    return res.status(404).json({ success: false, error: 'Announcement not found' });
-  }
-  return res.json({ success: true, data: mapRow(result.rows[0]) });
-});
-
-// GET /public/lookups/regions
-apiRouter.get('/public/lookups/regions', async (req: Request, res: Response) => {
-  try {
-    const result = await query(
-      'SELECT * FROM regions WHERE is_active = true ORDER BY sort_order ASC'
-    );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /public/lookups/fields
-apiRouter.get('/public/lookups/fields', async (req: Request, res: Response) => {
-  try {
-    const result = await query(
-      'SELECT * FROM lookup_fields_of_study WHERE is_active = true ORDER BY sort_order ASC'
-    );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /public/lookups/graduation-levels
-apiRouter.get('/public/lookups/graduation-levels', async (req: Request, res: Response) => {
-  try {
-    const result = await query(
-      'SELECT * FROM lookup_graduation_levels WHERE is_active = true ORDER BY sort_order ASC'
-    );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /public/lookups/sectors
-apiRouter.get('/public/lookups/sectors', async (req: Request, res: Response) => {
-  try {
-    const result = await query(
-      'SELECT * FROM lookup_sectors WHERE is_active = true ORDER BY sort_order ASC'
-    );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /public/lookups
-apiRouter.get('/public/lookups', async (req: Request, res: Response) => {
-  const lang = (req.query.lang as SupportedLanguage) || 'en';
-
-  const [regionsRes, sectorsRes, fieldsRes, gradRes, occRes] = await Promise.all([
-    query('SELECT * FROM regions WHERE is_active = true ORDER BY sort_order ASC'),
-    query('SELECT * FROM lookup_sectors WHERE is_active = true ORDER BY sort_order ASC'),
-    query('SELECT * FROM lookup_fields_of_study WHERE is_active = true ORDER BY sort_order ASC'),
-    query('SELECT * FROM lookup_graduation_levels WHERE is_active = true ORDER BY sort_order ASC'),
-    query('SELECT * FROM lookup_occupation_types WHERE is_active = true ORDER BY sort_order ASC'),
-  ]);
-
-  const localize = (items: any[]) =>
-    items.map((item) => {
-      const mapped = mapRow(item);
-      let localizedLabel = mapped.name || mapped.label;
-      if (typeof localizedLabel === 'object' && localizedLabel !== null) {
-        localizedLabel = localizedLabel[lang] || localizedLabel.en || Object.values(localizedLabel)[0];
-      }
-      return {
-        ...mapped,
-        displayName: localizedLabel,
-      };
-    });
-
-  return res.json({
-    success: true,
-    data: {
-      regions: localize(regionsRes.rows),
-      sectors: localize(sectorsRes.rows),
-      fieldsOfStudy: localize(fieldsRes.rows),
-      graduationLevels: localize(gradRes.rows),
-      occupationTypes: localize(occRes.rows),
-    },
-  });
-});
-
-// OTP Request & Verify (Phase 3 gated by FEATURE_EMAIL_OTP)
-const otpRequestSchema = z.object({
-  email: z.string().email(),
-  phone: z.string().optional(),
-  lang: z.enum(['en', 'om', 'am', 'ar', 'fr']).optional(),
-});
-
-apiRouter.post(
-  '/public/registrations/otp/request',
-  customRateLimiter({ windowMs: 3600 * 1000, max: 3, message: 'Maximum 3 OTP requests per hour allowed.' }),
-  validateBody(otpRequestSchema),
-  async (req: Request, res: Response) => {
-    const { email, phone, lang = 'en' } = req.body;
-    const result = await otpService.requestOtp(email, phone, req.ip, lang);
-    if (!result.success) {
-      return res.status(429).json({ success: false, error: result.error });
-    }
-    return res.json({ success: true, message: 'Verification code sent successfully.' });
-  }
-);
-
-const otpVerifySchema = z.object({
-  email: z.string().email(),
-  code: z.string().length(6),
-});
-
-apiRouter.post(
-  '/public/registrations/otp/verify',
-  validateBody(otpVerifySchema),
-  async (req: Request, res: Response) => {
-    const { email, code } = req.body;
-    const result = await otpService.verifyOtp(email, code);
-    if (!result.success) {
-      return res.status(400).json({ success: false, error: result.error });
-    }
-    return res.json({ success: true, data: { otpToken: result.otpToken } });
-  }
-);
-
-// POST /public/registrations (Multipart or JSON)
-const registrationRateLimiter = customRateLimiter({
-  windowMs: 3600 * 1000,
-  max: 5,
-  message: 'Registration limit reached (max 5 per hour). Please try again later.',
-});
-
-apiRouter.post(
-  '/public/registrations',
-  registrationRateLimiter,
-  memberRegistrationUpload,
-  async (req: Request, res: Response) => {
-    try {
-      const body = req.body;
-
-      // Check OTP token if FEATURE_EMAIL_OTP is active
-      if (process.env.FEATURE_EMAIL_OTP === 'true') {
-        const otpToken = req.headers['x-otp-token'] as string;
-        if (!otpToken || !otpService.verifyOtpToken(otpToken, body.email)) {
-          return res.status(400).json({
-            success: false,
-            error: 'Email verification is required. Please verify your email via OTP first.',
-          });
-        }
-      }
-
-      // Basic validation
-      const regSchema = z.object({
-        fullName: z.string().min(3),
-        phone: z.string().min(9),
-        email: z.string().email(),
-        gender: z.enum(['male', 'female']),
-        dateOfBirth: z.string().optional(),
-        graduationLevelId: z.string().min(1),
-        occupationType: z.enum(['private', 'government', 'other']),
-        sectorId: z.string().min(1),
-        fieldOfStudyId: z.string().min(1),
-        professionalCategory: z.string().optional(),
-        organizationName: z.string().optional(),
-        jobTitle: z.string().optional(),
-        regionId: z.string().min(1),
-        town: z.string().optional(),
-        idType: z.enum(['fayda', 'passport']),
-        idNumber: z.string().min(4),
-        consent: z.union([z.boolean(), z.string()]),
-      });
-
-      const parsed = regSchema.safeParse(body);
-      if (!parsed.success) {
-        return res.status(400).json({
-          success: false,
-          error: 'Validation failed',
-          fields: parsed.error.flatten().fieldErrors,
-        });
-      }
-
-      const normalizedPhone = normalizeEthiopianPhone(parsed.data.phone);
-      const pepper = process.env.SERVER_PEPPER || 'ohpea_pepper_2026';
-      const idHash = crypto
-        .createHash('sha256')
-        .update(`${parsed.data.idType}:${parsed.data.idNumber.trim()}:${pepper}`)
-        .digest('hex');
-      const idLast4 = parsed.data.idNumber.trim().slice(-4);
-
-      // Duplicate check
-      const duplicate = await dbOperations.checkDuplicateMember(
-        normalizedPhone,
-        parsed.data.email,
-        parsed.data.idType,
-        parsed.data.idNumber
-      );
-
-      if (duplicate) {
-        return res.status(409).json({
-          success: false,
-          error: 'A member with this phone number, email address, or ID number already exists.',
-        });
-      }
-
-      const memberNo = await dbOperations.getNextMemberNumber();
-      const memberId = crypto.randomUUID();
-
-      const member = await dbOperations.createMember({
-        id: memberId,
-        memberNo,
-        fullName: parsed.data.fullName,
-        phone: normalizedPhone,
-        email: parsed.data.email,
-        gender: parsed.data.gender,
-        dateOfBirth: parsed.data.dateOfBirth,
-        graduationLevelId: parsed.data.graduationLevelId,
-        occupationType: parsed.data.occupationType,
-        sectorId: parsed.data.sectorId,
-        fieldOfStudyId: parsed.data.fieldOfStudyId,
-        professionalCategory: parsed.data.professionalCategory,
-        organizationName: parsed.data.organizationName,
-        jobTitle: parsed.data.jobTitle,
-        regionId: parsed.data.regionId,
-        town: parsed.data.town,
-        idType: parsed.data.idType,
-        idNumberHash: idHash,
-        idNumberLast4: idLast4,
-        registrationStatus: 'pending',
-        membershipStatus: 'pending',
-        preferredLanguage: (req.query.lang as SupportedLanguage) || 'en',
-        source: 'online',
-      });
-
-      // Handle uploaded files safely into private member directory
-      const memberDir = path.join(PRIVATE_UPLOAD_PATH, 'members', memberId);
-      if (!fs.existsSync(memberDir)) fs.mkdirSync(memberDir, { recursive: true });
-
-      const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
-      if (files) {
-        if (files.idDocument?.[0]) {
-          const file = files.idDocument[0];
-          const storedName = `id-${Date.now()}-${path.basename(file.path)}`;
-          const targetPath = path.join(memberDir, storedName);
-          fs.renameSync(file.path, targetPath);
-          const hash = calculateFileHash(targetPath);
-          await dbOperations.addMemberDocument({
-            memberId,
-            kind: 'id',
-            originalName: file.originalname,
-            storedName,
-            mime: file.mimetype,
-            size: file.size,
-            sha256: hash,
-          });
-        }
-
-        // CV / Company Profile
-        if (files.cvCompanyProfile?.[0]) {
-          const file = files.cvCompanyProfile[0];
-          const storedName = `cv-${Date.now()}-${path.basename(file.path)}`;
-          const targetPath = path.join(memberDir, storedName);
-          fs.renameSync(file.path, targetPath);
-          const hash = calculateFileHash(targetPath);
-          await dbOperations.addMemberDocument({
-            memberId,
-            kind: 'credential',
-            originalName: file.originalname,
-            storedName,
-            mime: file.mimetype,
-            size: file.size,
-            sha256: hash,
-          });
-        }
-
-        // Academic Certificates (multiple)
-        if (files.academicCertificates) {
-          for (const file of files.academicCertificates) {
-            const storedName = `cert-${Date.now()}-${path.basename(file.path)}`;
-            const targetPath = path.join(memberDir, storedName);
-            fs.renameSync(file.path, targetPath);
-            const hash = calculateFileHash(targetPath);
-            await dbOperations.addMemberDocument({
-              memberId,
-              kind: 'credential',
-              originalName: file.originalname,
-              storedName,
-              mime: file.mimetype,
-              size: file.size,
-              sha256: hash,
-            });
-          }
-        }
-
-        if (files.credentials) {
-          for (const file of files.credentials) {
-            const storedName = `cred-${Date.now()}-${path.basename(file.path)}`;
-            const targetPath = path.join(memberDir, storedName);
-            fs.renameSync(file.path, targetPath);
-            const hash = calculateFileHash(targetPath);
-            await dbOperations.addMemberDocument({
-              memberId,
-              kind: 'credential',
-              originalName: file.originalname,
-              storedName,
-              mime: file.mimetype,
-              size: file.size,
-              sha256: hash,
-            });
-          }
-        }
-      }
-
-      // Notifications (async)
-      emailService.sendRegistrationReceived(member.email, member.fullName, member.memberNo, member.preferredLanguage);
-      if (process.env.FEATURE_SMS === 'true') {
-        afroSmsService.sendSms(
-          member.phone,
-          `OHPEA: Hello ${member.fullName}, your registration #${member.memberNo} has been received and is under review.`
-        );
-      }
-
-      return res.status(201).json({
-        success: true,
-        data: {
-          memberNo: member.memberNo,
-          registrationStatus: 'pending',
-          membershipStatus: 'pending',
-          fullName: member.fullName,
-        },
-      });
-    } catch (err: any) {
-      console.error('[Registration Error]', err);
-      return res.status(500).json({ success: false, error: 'Registration failed due to an internal error' });
-    }
-  }
-);
-
-// POST /public/contact
-const contactSchema = z.object({
-  name: z.string().min(2).optional(),
-  fullName: z.string().min(2).optional(),
-  email: z.string().email(),
-  phone: z.string().optional(),
-  subject: z.string().min(3),
-  message: z.string().min(10),
-}).refine((data) => Boolean(data.name || data.fullName), {
-  message: 'Either name or fullName is required',
-  path: ['name'],
-});
-
-apiRouter.post(
-  '/public/contact',
-  customRateLimiter({ windowMs: 3600 * 1000, max: 5 }),
-  validateBody(contactSchema),
-  async (req: Request, res: Response) => {
-    const { name, fullName, email, phone, subject, message } = req.body;
-    await query(
-      `INSERT INTO contact_messages (id, name, email, phone, subject, message, status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, 'new', NOW())`,
-      [crypto.randomUUID(), fullName || name, email, phone || null, subject, message]
-    );
-    return res.json({ success: true, message: 'Message sent successfully. We will be in touch shortly.' });
-  }
-);
-
-// POST /public/newsletter
-const newsletterSchema = z.object({
-  email: z.string().email(),
-  name: z.string().optional(),
-});
-
-apiRouter.post(
-  '/public/newsletter',
-  customRateLimiter({ windowMs: 3600 * 1000, max: 5 }),
-  validateBody(newsletterSchema),
-  async (req: Request, res: Response) => {
-    const { email, name } = req.body;
-    const cleanEmail = email.toLowerCase().trim();
-    await query(
-      `INSERT INTO newsletter_subscribers (id, name, email, is_active, created_at)
-       VALUES ($1, $2, $3, true, NOW())
-       ON CONFLICT (email) DO UPDATE SET is_active = true`,
-      [crypto.randomUUID(), name || null, cleanEmail]
-    );
-    return res.json({ success: true, message: 'Subscribed to OHPEA newsletter.' });
-  }
-);
-
-// GET /public/translations/:lang
-apiRouter.get('/public/translations/:lang', (req: Request, res: Response) => {
-  const lang = (req.params.lang as SupportedLanguage) || 'en';
-  return res.json({
-    success: true,
-    data: translations[lang] || translations.en,
-  });
-});
-
-/* ==========================================================================
    3. ADMIN: MEMBERS MANAGEMENT
    ========================================================================== */
 
 const adminAuthChain = [authenticateJWT, loadAdminContext];
 
-// GET /admin/members
-apiRouter.get(
-  '/admin/members',
-  adminAuthChain,
-  requirePermission('members'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const result = await dbOperations.getMembers({
-      q: req.query.q as string,
-      registrationStatus: req.query.registrationStatus as string,
-      membershipStatus: req.query.membershipStatus as string,
-      gender: req.query.gender as string,
-      sectorId: req.query.sectorId as string,
-      fieldId: req.query.fieldId as string,
-      regionId: req.query.regionId as string,
-      occupationType: req.query.occupationType as string,
-      graduationLevelId: req.query.graduationLevelId as string,
-      paid: req.query.paid === 'true' ? true : req.query.paid === 'false' ? false : undefined,
-      period: req.query.period as string,
-      createdFrom: req.query.createdFrom as string,
-      createdTo: req.query.createdTo as string,
-      page: parseInt(String(req.query.page || '1'), 10),
-      pageSize: parseInt(String(req.query.pageSize || '20'), 10),
-      sort: req.query.sort as string,
-    });
+function memberFilters(req: Request) {
+  const q = req.query;
+  const s = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  return {
+    q: s(q.q),
+    registrationStatus: s(q.registrationStatus),
+    membershipStatus: s(q.membershipStatus),
+    gender: s(q.gender),
+    sectorId: s(q.sectorId),
+    fieldId: s(q.fieldId),
+    regionId: s(q.regionId),
+    occupationType: s(q.occupationType),
+    graduationLevelId: s(q.graduationLevelId),
+    paid: q.paid === 'true' ? true : q.paid === 'false' ? false : undefined,
+    createdFrom: s(q.createdFrom),
+    createdTo: s(q.createdTo),
+  };
+}
 
-    return res.json({
-      success: true,
-      data: result.items,
-      meta: result.meta,
-    });
+function outsideRegion(req: Request, member: any) {
+  return req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId;
+}
+
+async function memberDetail(id: string, lang: any) {
+  const member = await dbOperations.getMemberById(id);
+  if (!member) return null;
+  const [docs, info] = await Promise.all([dbOperations.getMemberDocuments(id), loadPaymentInfo([id])]);
+  return toMemberDetailDto(member, docs, lang, info[id]);
+}
+
+function validateMemberBody(b: ReturnType<typeof normalizeMemberBody>, creating: boolean) {
+  const errors: Record<string, string> = {};
+  if (creating) {
+    for (const k of ['fullName', 'phone', 'email', 'gender', 'graduationLevelId', 'occupationType', 'sectorId', 'fieldOfStudyId', 'regionId', 'idType', 'idNumber'] as const) {
+      if (!b[k]) errors[k] = 'Required';
+    }
   }
-);
+  if (b.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) errors.email = 'Invalid email address';
+  if (b.gender && !['male', 'female', 'unspecified'].includes(b.gender)) errors.gender = 'Must be male, female or unspecified';
+  if (b.occupationType && !['private', 'government', 'other'].includes(b.occupationType)) errors.occupationType = 'Invalid occupation type';
+  if (b.idType && !['fayda', 'passport', 'kebele', 'driver'].includes(b.idType)) errors.idType = 'Invalid ID type';
+  if (b.phone) {
+    const p = normalizeEthiopianPhone(b.phone);
+    if (!/^\+251[79]\d{8}$/.test(p)) errors.phone = 'Enter a valid Ethiopian mobile number';
+  }
+  return errors;
+}
+
+// GET /admin/members
+apiRouter.get('/admin/members', adminAuthChain, requirePermission('members'), requireRegionScope, async (req: Request, res: Response) => {
+  const lang = getLang(req);
+  const result = await dbOperations.getMembers({
+    ...memberFilters(req),
+    page: parseInt(String(req.query.page || '1'), 10),
+    pageSize: parseInt(String(req.query.pageSize || '20'), 10),
+    sort: req.query.sort as string,
+  });
+  const info = await loadPaymentInfo(result.items.map((m: any) => m.id));
+  return res.json({
+    success: true,
+    data: result.items.map((m: any) => toMemberSummaryDto(m, lang, info[m.id])),
+    meta: result.meta,
+  });
+});
 
 // GET /admin/registrations/pending-count
-apiRouter.get(
-  '/admin/registrations/pending-count',
-  adminAuthChain,
-  requirePermission('members'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const regionId = req.query.regionId as string;
-    const cond = regionId ? "WHERE registration_status = 'pending' AND region_id = $1" : "WHERE registration_status = 'pending'";
-    const params = regionId ? [regionId] : [];
-    const resCount = await query(`SELECT count(*) as count FROM members ${cond}`, params);
-    return res.json({ success: true, data: { pendingCount: parseInt(resCount.rows[0].count, 10) } });
-  }
-);
+apiRouter.get('/admin/registrations/pending-count', adminAuthChain, requirePermission('members'), requireRegionScope, async (req: Request, res: Response) => {
+  const regionId = req.query.regionId as string;
+  const cond = regionId ? "WHERE registration_status = 'pending' AND region_id = $1" : "WHERE registration_status = 'pending'";
+  const resCount = await query(`SELECT count(*) as count FROM members ${cond}`, regionId ? [regionId] : []);
+  return res.json({ success: true, data: { pendingCount: parseInt(resCount.rows[0].count, 10) || 0 } });
+});
 
-// GET /admin/registrations
-apiRouter.get(
-  '/admin/registrations',
-  adminAuthChain,
-  requirePermission('members'),
-  async (req: Request, res: Response) => {
-    const status = req.query.status as string;
-    const phone = req.query.phone as string;
-    let sql = 'SELECT * FROM registrations';
-    const conditions: string[] = [];
-    const params: any[] = [];
-    if (status) {
-      params.push(status);
-      conditions.push(`status = $${params.length}`);
-    }
-    if (phone) {
-      params.push(phone);
-      conditions.push(`phone = $${params.length}`);
-    }
-    if (conditions.length > 0) {
-      sql += ' WHERE ' + conditions.join(' AND ');
-    }
-    sql += ' ORDER BY created_at DESC LIMIT 50';
-    const result = await query(sql, params);
-    return res.json({ success: true, data: result.rows.map(mapRow) });
+// GET /admin/members/export  (must stay above /admin/members/:id)
+apiRouter.get('/admin/members/export', adminAuthChain, requirePermission('members.export'), requireRegionScope, async (req: Request, res: Response) => {
+  const format = (req.query.format as string) === 'pdf' ? 'pdf' : 'xlsx';
+  const data = await dbOperations.getMembers({ ...memberFilters(req), pageSize: 100, page: 1 });
+  let items = data.items;
+  for (let page = 2; page <= (data.meta?.totalPages || 1) && page <= 50; page++) {
+    const more = await dbOperations.getMembers({ ...memberFilters(req), pageSize: 100, page });
+    items = items.concat(more.items);
   }
-);
 
-// GET /admin/registrations/:id
-apiRouter.get(
-  '/admin/registrations/:id',
-  adminAuthChain,
-  requirePermission('members'),
-  async (req: Request, res: Response) => {
-    const result = await query('SELECT * FROM registrations WHERE id = $1', [req.params.id]);
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, error: 'Registration not found' });
-    }
-    return res.json({ success: true, data: mapRow(result.rows[0]) });
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: `member.export_${format}`, entity: 'members', ip: req.ip });
+
+  if (format === 'pdf') {
+    const buffer = await exportService.exportMembersToPdf(items);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="ophea-members.pdf"');
+    return res.send(buffer);
   }
-);
+  const buffer = await exportService.exportMembersToExcel(items);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="ophea-members.xlsx"');
+  return res.send(buffer);
+});
+
+// POST /admin/members (admin creates an approved member directly)
+apiRouter.post('/admin/members', adminAuthChain, requirePermission('members.edit'), requireRegionScope, async (req: Request, res: Response) => {
+  const b = normalizeMemberBody(req.body || {});
+  if (req.admin?.role === 'RegionalAdmin') b.regionId = req.admin.regionId || b.regionId;
+  const errors = validateMemberBody(b, true);
+  if (Object.keys(errors).length) {
+    return res.status(400).json({ success: false, error: 'Please fix the highlighted fields', fields: errors });
+  }
+
+  const phone = normalizeEthiopianPhone(b.phone!);
+  const dup = await dbOperations.checkDuplicateMember(phone, b.email!, b.idType!, b.idNumber!);
+  if (dup) {
+    return res.status(409).json({ success: false, error: 'A member with this phone, email or ID number already exists', fields: { phone: 'Possible duplicate' } });
+  }
+
+  const created = await dbOperations.createMember({
+    memberNo: await dbOperations.getNextMemberNumber(),
+    ...b,
+    phone,
+    idNumberHash: hashIdNumber(b.idType!, b.idNumber!),
+    idNumberLast4: b.idNumber!.slice(-4),
+    registrationStatus: 'pending',
+    membershipStatus: 'pending',
+    source: 'admin',
+  });
+  await dbOperations.approveMember(created.id, req.admin!.fullName);
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'member.create_admin', entity: 'members', entityId: created.id, ip: req.ip });
+  return res.status(201).json({ success: true, data: await memberDetail(created.id, getLang(req)) });
+});
 
 // GET /admin/members/:id
-apiRouter.get(
-  '/admin/members/:id',
-  adminAuthChain,
-  requirePermission('members'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const member = await dbOperations.getMemberById(req.params.id);
-    if (!member) {
-      return res.status(404).json({ success: false, error: 'Member not found' });
-    }
-
-    if (req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId) {
-      return res.status(403).json({ success: false, error: 'Forbidden: Member outside your regional jurisdiction.' });
-    }
-
-    const [documents, payments] = await Promise.all([
-      dbOperations.getMemberDocuments(member.id),
-      query('SELECT * FROM payments WHERE member_id = $1 ORDER BY paid_at DESC', [member.id]),
-    ]);
-
-    return res.json({
-      success: true,
-      data: {
-        ...member,
-        documents,
-        payments: payments.rows.map(mapRow),
-      },
-    });
-  }
-);
+apiRouter.get('/admin/members/:id', adminAuthChain, requirePermission('members'), requireRegionScope, async (req: Request, res: Response) => {
+  const member = await dbOperations.getMemberById(req.params.id);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (outsideRegion(req, member)) return res.status(403).json({ success: false, error: 'Forbidden: Member outside your regional jurisdiction.' });
+  return res.json({ success: true, data: await memberDetail(req.params.id, getLang(req)) });
+});
 
 // GET /admin/members/:id/payments
-apiRouter.get(
-  '/admin/members/:id/payments',
-  adminAuthChain,
-  requirePermission('members'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const member = await dbOperations.getMemberById(req.params.id);
-    if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
-
-    if (req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId) {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
-    }
-
-    const result = await query(
-      'SELECT * FROM payments WHERE member_id = $1 ORDER BY paid_at DESC',
-      [req.params.id]
-    );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  }
-);
+apiRouter.get('/admin/members/:id/payments', adminAuthChain, requirePermission('payments'), requireRegionScope, async (req: Request, res: Response) => {
+  const member = await dbOperations.getMemberById(req.params.id);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (outsideRegion(req, member)) return res.status(403).json({ success: false, error: 'Forbidden' });
+  const rows = await query(
+    `SELECT p.*, m.full_name AS member_name, m.member_no FROM payments p LEFT JOIN members m ON p.member_id = m.id
+     WHERE p.member_id = $1 ORDER BY p.paid_at DESC`,
+    [req.params.id]
+  );
+  return res.json({ success: true, data: rows.rows.map(mapRow).map((r: any) => toPaymentDto(r, getLang(req))) });
+});
 
 // PUT /admin/members/:id
-apiRouter.put(
-  '/admin/members/:id',
-  adminAuthChain,
-  requirePermission('members.edit'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const existing = await dbOperations.getMemberById(req.params.id);
-    if (!existing) return res.status(404).json({ success: false, error: 'Member not found' });
+apiRouter.put('/admin/members/:id', adminAuthChain, requirePermission('members.edit'), requireRegionScope, async (req: Request, res: Response) => {
+  const existing = await dbOperations.getMemberById(req.params.id);
+  if (!existing) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (outsideRegion(req, existing)) return res.status(403).json({ success: false, error: 'Forbidden' });
 
-    if (req.admin?.role === 'RegionalAdmin' && existing.regionId !== req.admin.regionId) {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
-    }
-
-    const b = req.body;
-    const resUpdate = await query(
-      `UPDATE members SET
-        full_name = COALESCE($1, full_name),
-        phone = COALESCE($2, phone),
-        email = COALESCE($3, email),
-        organization_name = COALESCE($4, organization_name),
-        job_title = COALESCE($5, job_title),
-        town = COALESCE($6, town),
-        professional_category = COALESCE($7, professional_category),
-        updated_at = NOW()
-       WHERE id = $8 RETURNING *`,
-      [b.fullName, b.phone, b.email, b.organizationName, b.jobTitle, b.town, b.professionalCategory, req.params.id]
-    );
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'member.edit',
-      entity: 'members',
-      entityId: req.params.id,
-      before: existing,
-      after: resUpdate.rows[0],
-      ip: req.ip,
-    });
-
-    return res.json({ success: true, data: mapRow(resUpdate.rows[0]) });
+  const b = normalizeMemberBody(req.body || {});
+  if (req.admin?.role === 'RegionalAdmin') b.regionId = existing.regionId;
+  const errors = validateMemberBody(b, false);
+  if (Object.keys(errors).length) {
+    return res.status(400).json({ success: false, error: 'Please fix the highlighted fields', fields: errors });
   }
-);
+
+  const phone = b.phone ? normalizeEthiopianPhone(b.phone) : undefined;
+  if (phone || b.email) {
+    const clash = await query(
+      'SELECT id FROM members WHERE id <> $1 AND (($2::text IS NOT NULL AND phone = $2) OR ($3::text IS NOT NULL AND LOWER(email) = $3))',
+      [req.params.id, phone ?? null, b.email ? b.email.toLowerCase() : null]
+    );
+    if (clash.rows.length) {
+      return res.status(409).json({ success: false, error: 'Another member already uses this phone or email', fields: { phone: 'Already in use' } });
+    }
+  }
+
+  const cols: Record<string, any> = {
+    full_name: b.fullName,
+    phone,
+    email: b.email ? b.email.toLowerCase() : undefined,
+    gender: b.gender,
+    date_of_birth: b.dateOfBirth,
+    graduation_level_id: b.graduationLevelId,
+    occupation_type: b.occupationType,
+    sector_id: b.sectorId,
+    field_of_study_id: b.fieldOfStudyId,
+    professional_category: b.professionalCategory,
+    organization_name: b.organizationName,
+    job_title: b.jobTitle,
+    region_id: b.regionId,
+    town: b.town,
+    id_type: b.idType,
+    preferred_language: b.preferredLanguage,
+    membership_category: b.membershipCategory,
+    nationality: b.nationality,
+    emergency_contact_name: b.emergencyContactName,
+    emergency_contact_phone: b.emergencyContactPhone,
+    business_tin: b.businessTin,
+    skills: b.skills,
+    expertise_areas: b.expertiseAreas,
+    interests: b.interests,
+  };
+  if (b.idNumber && !b.idNumber.startsWith('••')) {
+    cols.id_number_hash = hashIdNumber(b.idType || existing.idType, b.idNumber);
+    cols.id_number_last4 = b.idNumber.slice(-4);
+  }
+  const keys = Object.keys(cols).filter((k) => cols[k] !== undefined);
+  if (keys.length) {
+    const sets = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
+    await query(`UPDATE members SET ${sets}, updated_at = NOW() WHERE id = $${keys.length + 1}`, [...keys.map((k) => cols[k]), req.params.id]);
+  }
+
+  await dbOperations.createAuditLog({
+    adminId: req.admin?.id,
+    action: 'member.edit',
+    entity: 'members',
+    entityId: req.params.id,
+    after: Object.fromEntries(keys.filter((k) => !k.startsWith('id_number')).map((k) => [k, cols[k]])),
+    ip: req.ip,
+  });
+  return res.json({ success: true, data: await memberDetail(req.params.id, getLang(req)) });
+});
 
 // PATCH /admin/members/:id/status
-apiRouter.patch(
-  '/admin/members/:id/status',
-  adminAuthChain,
-  requirePermission('members.edit'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const { membershipStatus } = req.body;
-    if (!['active', 'inactive', 'pending'].includes(membershipStatus)) {
-      return res.status(400).json({ success: false, error: 'Invalid membership status' });
-    }
-
-    const member = await dbOperations.getMemberById(req.params.id);
-    if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
-
-    if (req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId) {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
-    }
-
-    const updated = await dbOperations.updateMemberStatus(req.params.id, membershipStatus);
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'member.status_change',
-      entity: 'members',
-      entityId: req.params.id,
-      before: { membershipStatus: member.membershipStatus },
-      after: { membershipStatus },
-      ip: req.ip,
-    });
-
-    return res.json({ success: true, data: updated });
+apiRouter.patch('/admin/members/:id/status', adminAuthChain, requirePermission('members.edit'), requireRegionScope, async (req: Request, res: Response) => {
+  const { membershipStatus } = req.body || {};
+  if (!['active', 'inactive', 'pending'].includes(membershipStatus)) {
+    return res.status(400).json({ success: false, error: 'Invalid membership status', fields: { membershipStatus: 'Must be active, inactive or pending' } });
   }
-);
+  const member = await dbOperations.getMemberById(req.params.id);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (outsideRegion(req, member)) return res.status(403).json({ success: false, error: 'Forbidden' });
+
+  await dbOperations.updateMemberStatus(req.params.id, membershipStatus);
+  await dbOperations.createAuditLog({
+    adminId: req.admin?.id,
+    action: 'member.status_change',
+    entity: 'members',
+    entityId: req.params.id,
+    before: { membershipStatus: member.membershipStatus },
+    after: { membershipStatus },
+    ip: req.ip,
+  });
+  return res.json({ success: true, data: await memberDetail(req.params.id, getLang(req)) });
+});
 
 // POST /admin/members/:id/approve
-apiRouter.post(
-  '/admin/members/:id/approve',
-  adminAuthChain,
-  requirePermission('members.approve'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const member = await dbOperations.getMemberById(req.params.id);
-    if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+apiRouter.post('/admin/members/:id/approve', adminAuthChain, requirePermission('members.approve'), requireRegionScope, async (req: Request, res: Response) => {
+  const member = await dbOperations.getMemberById(req.params.id);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (outsideRegion(req, member)) return res.status(403).json({ success: false, error: 'Forbidden' });
 
-    if (req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId) {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
-    }
+  const approved = await dbOperations.approveMember(req.params.id, req.admin!.fullName);
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'member.approve', entity: 'members', entityId: req.params.id, ip: req.ip });
 
-    const approved = await dbOperations.approveMember(req.params.id, req.admin!.fullName);
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'member.approve',
-      entity: 'members',
-      entityId: req.params.id,
-      ip: req.ip,
-    });
-
-    // Notify member
-    emailService.sendApprovalEmail(approved.email, approved.fullName, approved.memberNo, approved.preferredLanguage);
-    if (process.env.FEATURE_SMS === 'true') {
-      afroSmsService.sendSms(
-        approved.phone,
-        `OHPEA: Congratulations ${approved.fullName}! Your membership application (#${approved.memberNo}) is approved.`
-      );
-    }
-
-    return res.json({ success: true, data: approved });
+  emailService.sendApprovalEmail(approved.email, approved.fullName, approved.memberNo, approved.preferredLanguage);
+  if (process.env.FEATURE_SMS === 'true') {
+    afroSmsService.sendSms(approved.phone, `OPHEA: Congratulations ${approved.fullName}! Your membership application (#${approved.memberNo}) is approved.`);
   }
-);
+  return res.json({ success: true, data: await memberDetail(req.params.id, getLang(req)) });
+});
 
 // POST /admin/members/:id/reject
-apiRouter.post(
-  '/admin/members/:id/reject',
-  adminAuthChain,
-  requirePermission('members.approve'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const { reason } = req.body;
-    if (!reason || reason.trim().length === 0) {
-      return res.status(400).json({ success: false, error: 'Rejection reason is required' });
-    }
+apiRouter.post('/admin/members/:id/reject', adminAuthChain, requirePermission('members.approve'), requireRegionScope, async (req: Request, res: Response) => {
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ success: false, error: 'Rejection reason is required', fields: { reason: 'Required' } });
 
-    const member = await dbOperations.getMemberById(req.params.id);
-    if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  const member = await dbOperations.getMemberById(req.params.id);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (outsideRegion(req, member)) return res.status(403).json({ success: false, error: 'Forbidden' });
 
-    if (req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId) {
-      return res.status(403).json({ success: false, error: 'Forbidden' });
-    }
+  const rejected = await dbOperations.rejectMember(req.params.id, reason);
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'member.reject', entity: 'members', entityId: req.params.id, before: { reason }, ip: req.ip });
+  emailService.sendRejectionEmail(rejected.email, rejected.fullName, reason, rejected.preferredLanguage);
+  return res.json({ success: true, data: await memberDetail(req.params.id, getLang(req)) });
+});
 
-    const rejected = await dbOperations.rejectMember(req.params.id, reason.trim());
+// DELETE /admin/members/:id (SuperAdmin soft delete)
+apiRouter.delete('/admin/members/:id', adminAuthChain, requireSuperAdmin, async (req: Request, res: Response) => {
+  const member = await dbOperations.getMemberById(req.params.id);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  await query(
+    "UPDATE members SET membership_status = 'inactive', registration_status = 'rejected', rejection_reason = 'Deactivated by SuperAdmin', updated_at = NOW() WHERE id = $1",
+    [req.params.id]
+  );
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'member.delete', entity: 'members', entityId: req.params.id, ip: req.ip });
+  return res.json({ success: true, data: { success: true } });
+});
 
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'member.reject',
-      entity: 'members',
-      entityId: req.params.id,
-      before: { reason },
-      ip: req.ip,
-    });
+// GET /admin/members/:id/documents/:docId (private streaming, audited)
+apiRouter.get('/admin/members/:id/documents/:docId', adminAuthChain, requirePermission('members'), requireRegionScope, async (req: Request, res: Response) => {
+  const member = await dbOperations.getMemberById(req.params.id);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (outsideRegion(req, member)) return res.status(403).json({ success: false, error: 'Forbidden' });
 
-    // Notify member
-    emailService.sendRejectionEmail(rejected.email, rejected.fullName, reason, rejected.preferredLanguage);
+  const doc = await dbOperations.getMemberDocumentById(req.params.id, req.params.docId);
+  if (!doc) return res.status(404).json({ success: false, error: 'Document not found' });
 
-    return res.json({ success: true, data: rejected });
-  }
-);
+  const filePath = path.join(PRIVATE_UPLOAD_PATH, 'members', req.params.id, doc.storedName);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ success: false, error: 'File missing from private storage' });
 
-// DELETE /admin/members/:id (SuperAdmin soft delete / deactivation)
-apiRouter.delete(
-  '/admin/members/:id',
-  adminAuthChain,
-  requireSuperAdmin,
-  async (req: Request, res: Response) => {
-    const member = await dbOperations.getMemberById(req.params.id);
-    if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
-
-    await dbOperations.updateMemberStatus(req.params.id, 'inactive');
-    await query("UPDATE members SET registration_status = 'rejected', rejection_reason = 'Deactivated by SuperAdmin' WHERE id = $1", [req.params.id]);
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'member.delete',
-      entity: 'members',
-      entityId: req.params.id,
-      ip: req.ip,
-    });
-
-    return res.json({ success: true, message: 'Member deactivated successfully.' });
-  }
-);
-
-// POST /admin/members (Admin creates member directly)
-apiRouter.post(
-  '/admin/members',
-  adminAuthChain,
-  requirePermission('members.edit'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const b = req.body;
-    const memberNo = await dbOperations.getNextMemberNumber();
-    const pepper = process.env.SERVER_PEPPER || 'ohpea_pepper_2026';
-    const idHash = crypto.createHash('sha256').update(`${b.idType || 'fayda'}:${(b.idNumber || '0000').trim()}:${pepper}`).digest('hex');
-
-    const member = await dbOperations.createMember({
-      memberNo,
-      fullName: b.fullName,
-      phone: normalizeEthiopianPhone(b.phone),
-      email: b.email,
-      gender: b.gender,
-      dateOfBirth: b.dateOfBirth,
-      graduationLevelId: b.graduationLevelId,
-      occupationType: b.occupationType,
-      sectorId: b.sectorId,
-      fieldOfStudyId: b.fieldOfStudyId,
-      professionalCategory: b.professionalCategory,
-      organizationName: b.organizationName,
-      jobTitle: b.jobTitle,
-      regionId: req.admin?.role === 'RegionalAdmin' ? req.admin.regionId : b.regionId,
-      town: b.town,
-      idType: b.idType || 'fayda',
-      idNumberHash: idHash,
-      idNumberLast4: (b.idNumber || '0000').slice(-4),
-      registrationStatus: 'approved',
-      membershipStatus: 'active',
-      approvedBy: req.admin?.fullName,
-      source: 'admin',
-    });
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'member.create_admin',
-      entity: 'members',
-      entityId: member.id,
-      ip: req.ip,
-    });
-
-    return res.status(201).json({ success: true, data: member });
-  }
-);
-
-// GET /admin/members/export
-apiRouter.get(
-  '/admin/members/export',
-  adminAuthChain,
-  requirePermission('members.export'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const format = (req.query.format as string) === 'pdf' ? 'pdf' : 'xlsx';
-    const membersData = await dbOperations.getMembers({
-      q: req.query.q as string,
-      registrationStatus: req.query.registrationStatus as string,
-      membershipStatus: req.query.membershipStatus as string,
-      regionId: req.query.regionId as string,
-      sectorId: req.query.sectorId as string,
-      pageSize: 500, // Export batch
-    });
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: `member.export_${format}`,
-      entity: 'members',
-      ip: req.ip,
-    });
-
-    if (format === 'pdf') {
-      const buffer = await exportService.exportMembersToPdf(membersData.items);
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', 'attachment; filename="ohpea-members.pdf"');
-      return res.send(buffer);
-    } else {
-      const buffer = await exportService.exportMembersToExcel(membersData.items);
-      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', 'attachment; filename="ohpea-members.xlsx"');
-      return res.send(buffer);
-    }
-  }
-);
-
-// GET /admin/members/:id/documents/:docId (Secure streaming with audit log)
-apiRouter.get(
-  '/admin/members/:id/documents/:docId',
-  adminAuthChain,
-  requirePermission('members'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const doc = await dbOperations.getMemberDocumentById(req.params.id, req.params.docId);
-    if (!doc) {
-      return res.status(404).json({ success: false, error: 'Document not found' });
-    }
-
-    const filePath = path.join(PRIVATE_UPLOAD_PATH, 'members', req.params.id, doc.storedName);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ success: false, error: 'File missing from private storage' });
-    }
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'document.view',
-      entity: 'member_documents',
-      entityId: doc.id,
-      ip: req.ip,
-    });
-
-    res.setHeader('Content-Type', doc.mime);
-    res.setHeader('Content-Disposition', `inline; filename="${doc.originalName}"`);
-    const stream = fs.createReadStream(path.resolve(filePath));
-    return stream.pipe(res);
-  }
-);
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'document.view', entity: 'member_documents', entityId: doc.id, ip: req.ip });
+  res.setHeader('Content-Type', doc.mime);
+  res.setHeader('Content-Disposition', `inline; filename="${String(doc.originalName).replace(/"/g, '')}"`);
+  return fs.createReadStream(path.resolve(filePath)).pipe(res);
+});
 
 /* ==========================================================================
    4. ADMIN: DASHBOARD METRICS
@@ -1229,7 +535,7 @@ apiRouter.get(
   requireRegionScope,
   async (req: Request, res: Response) => {
     const dimension = (req.query.dimension as any) || 'sector';
-    const lang = (req.query.lang as SupportedLanguage) || 'en';
+    const lang = getLang(req);
     const regionId = req.admin?.role === 'RegionalAdmin' ? req.admin.regionId : (req.query.regionId as string);
 
     const breakdown = await statsService.getMembersByDimension(dimension, lang, regionId);
@@ -1265,7 +571,7 @@ apiRouter.get(
        LEFT JOIN admin_users u ON a.admin_id = u.id 
        ORDER BY a.created_at DESC LIMIT 15`
     );
-    return res.json({ success: true, data: logs.rows.map(mapRow) });
+    return res.json({ success: true, data: logs.rows.map(mapRow).map(toRecentActivityDto) });
   }
 );
 
@@ -1273,585 +579,234 @@ apiRouter.get(
    5. ADMIN: PAYMENTS & CONTRIBUTIONS
    ========================================================================== */
 
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** Period boundaries computed on the YYYY-MM-DD string (no timezone drift). */
+function periodBounds(period: string, dateStr: string): { start: string; end: string } {
+  const [y, m, d] = dateStr.split('-').map((x) => parseInt(x, 10));
+  if (period === 'yearly') return { start: `${y}-01-01`, end: `${y}-12-31` };
+  if (period === 'monthly') {
+    const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    return { start: `${y}-${pad2(m)}-01`, end: `${y}-${pad2(m)}-${pad2(last)}` };
+  }
+  // weekly: Monday..Sunday containing the date
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  const dow = (dt.getUTCDay() + 6) % 7; // Mon=0
+  const mon = new Date(dt.getTime() - dow * 86400000);
+  const sun = new Date(mon.getTime() + 6 * 86400000);
+  const f = (x: Date) => `${x.getUTCFullYear()}-${pad2(x.getUTCMonth() + 1)}-${pad2(x.getUTCDate())}`;
+  return { start: f(mon), end: f(sun) };
+}
+
+const isYmd = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+const todayYmd = () => {
+  const n = new Date();
+  return `${n.getFullYear()}-${pad2(n.getMonth() + 1)}-${pad2(n.getDate())}`;
+};
+
+async function findUnpaidMembers(period: string, dateStr: string, regionId?: string) {
+  const { start, end } = periodBounds(period, dateStr);
+  const params: any[] = [start, end];
+  let regionCond = '';
+  if (regionId) {
+    params.push(regionId);
+    regionCond = 'AND m.region_id = $3';
+  }
+  const res = await query(
+    `SELECT m.*, r.name AS region_name, s.label AS sector_label, f.label AS field_label, g.label AS grad_label
+     FROM members m
+     LEFT JOIN regions r ON m.region_id = r.id
+     LEFT JOIN lookup_sectors s ON m.sector_id = s.id
+     LEFT JOIN lookup_fields_of_study f ON m.field_of_study_id = f.id
+     LEFT JOIN lookup_graduation_levels g ON m.graduation_level_id = g.id
+     WHERE m.registration_status = 'approved' AND m.membership_status = 'active'
+     ${regionCond}
+     AND NOT EXISTS (
+       SELECT 1 FROM payments p
+       WHERE p.member_id = m.id AND p.status = 'paid' AND p.period_start <= $2 AND p.period_end >= $1
+     )
+     ORDER BY m.full_name ASC
+     LIMIT 1000`,
+    params
+  );
+  return res.rows.map(mapRow);
+}
+
 const paymentCreateSchema = z.object({
   memberId: z.string().min(1),
   planId: z.string().optional(),
   amountEtb: z.number().positive(),
   period: z.enum(['weekly', 'monthly', 'yearly']),
-  paidForDate: z.string(), // YYYY-MM-DD
+  paidForDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
   method: z.enum(['cash', 'bank_transfer', 'mobile_money', 'other']),
   reference: z.string().optional(),
   bank: z.string().optional(),
   note: z.string().optional(),
 });
 
-// POST /admin/payments
-apiRouter.post(
-  '/admin/payments',
-  adminAuthChain,
-  requirePermission('payments.record'),
-  validateBody(paymentCreateSchema),
-  async (req: Request, res: Response) => {
-    const b = req.body;
-    const member = await dbOperations.getMemberById(b.memberId);
-    if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+// GET /admin/payments/unpaid   (must stay above /admin/payments/:id)
+apiRouter.get('/admin/payments/unpaid', adminAuthChain, requirePermission('payments'), requireRegionScope, async (req: Request, res: Response) => {
+  const period = ['weekly', 'monthly', 'yearly'].includes(String(req.query.period)) ? String(req.query.period) : 'monthly';
+  const date = isYmd(req.query.date) ? (req.query.date as string) : todayYmd();
+  const rows = await findUnpaidMembers(period, date, (req.query.regionId as string) || undefined);
+  const info = await loadPaymentInfo(rows.map((r: any) => r.id));
+  const lang = getLang(req);
+  return res.json({ success: true, data: rows.map((m: any) => toMemberSummaryDto(m, lang, info[m.id])) });
+});
 
-    // Compute period start and end
-    const paidFor = new Date(b.paidForDate);
-    let periodStart = b.paidForDate;
-    let periodEnd = b.paidForDate;
-
-    if (b.period === 'monthly') {
-      const year = paidFor.getFullYear();
-      const month = paidFor.getMonth();
-      const firstDay = new Date(year, month, 1);
-      const lastDay = new Date(year, month + 1, 0);
-      periodStart = firstDay.toISOString().split('T')[0];
-      periodEnd = lastDay.toISOString().split('T')[0];
-    } else if (b.period === 'yearly') {
-      const year = paidFor.getFullYear();
-      periodStart = `${year}-01-01`;
-      periodEnd = `${year}-12-31`;
-    }
-
-    // Check duplicate payment for this period
-    const existing = await query(
-      `SELECT id FROM payments WHERE member_id = $1 AND period = $2 AND period_start = $3 AND status = 'paid'`,
-      [b.memberId, b.period, periodStart]
-    );
-
-    if (existing.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        error: `A contribution has already been recorded for this member for the period ${periodStart} to ${periodEnd}.`,
-      });
-    }
-
-    const receiptNo = await dbOperations.getNextReceiptNumber();
-
-    const payment = await dbOperations.createPayment({
-      memberId: b.memberId,
-      planId: b.planId,
-      regionId: member.regionId,
-      amountEtb: b.amountEtb,
-      period: b.period,
-      periodStart,
-      periodEnd,
-      method: b.method,
-      reference: b.reference,
-      bank: b.bank,
-      receivedBy: req.admin!.fullName,
-      receiptNo,
-      note: b.note,
-    });
-
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'payment.record',
-      entity: 'payments',
-      entityId: payment.id,
-      after: payment,
-      ip: req.ip,
-    });
-
-    // Notify member
-    emailService.sendReceiptEmail(member.email, member.fullName, payment.receiptNo, payment.amountEtb, payment.period);
-    if (process.env.FEATURE_SMS === 'true') {
-      afroSmsService.sendSms(
-        member.phone,
-        `OHPEA: Received ${payment.amountEtb} ETB contribution from ${member.fullName}. Receipt #${payment.receiptNo}. Thank you!`
-      );
-    }
-
-    return res.status(201).json({ success: true, data: payment });
+// GET /admin/payments/export   (must stay above /admin/payments/:id)
+apiRouter.get('/admin/payments/export', adminAuthChain, requirePermission('payments'), requireRegionScope, async (req: Request, res: Response) => {
+  const filters = {
+    memberId: req.query.memberId as string,
+    regionId: req.query.regionId as string,
+    status: req.query.status as string,
+    period: req.query.period as string,
+    method: req.query.method as string,
+    q: req.query.q as string,
+    from: req.query.from as string,
+    to: req.query.to as string,
+  };
+  const first = await dbOperations.getPayments({ ...filters, page: 1, pageSize: 100 });
+  let items = first.items;
+  for (let page = 2; page <= first.meta.totalPages && page <= 50; page++) {
+    items = items.concat((await dbOperations.getPayments({ ...filters, page, pageSize: 100 })).items);
   }
-);
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'payment.export', entity: 'payments', ip: req.ip });
+  const buffer = await exportService.exportPaymentsToExcel(items);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="ophea-payments.xlsx"');
+  return res.send(buffer);
+});
+
+// POST /admin/payments/reminders   (must stay above /admin/payments/:id)
+apiRouter.post('/admin/payments/reminders', adminAuthChain, requirePermission('sms'), requireRegionScope, async (req: Request, res: Response) => {
+  const period = ['weekly', 'monthly', 'yearly'].includes(String(req.body?.period)) ? String(req.body.period) : 'monthly';
+  const date = isYmd(req.body?.date) ? req.body.date : todayYmd();
+  const regionId = req.admin?.role === 'RegionalAdmin' ? req.admin.regionId || undefined : undefined;
+  const unpaid = await findUnpaidMembers(period, date, regionId);
+
+  if (process.env.FEATURE_SMS !== 'true') {
+    return res.json({ success: true, data: { queuedCount: 0 }, message: 'SMS is not enabled on this server (FEATURE_SMS), so no reminders were queued.' });
+  }
+  let queued = 0;
+  for (const m of unpaid) {
+    try {
+      await afroSmsService.sendSms(m.phone, `OPHEA: Dear ${m.fullName}, your ${period} contribution is due. Please pay at your earliest convenience. Thank you.`);
+      queued++;
+    } catch {
+      /* continue with remaining members */
+    }
+  }
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'payment.reminders', entity: 'payments', after: { period, date, queued }, ip: req.ip });
+  return res.json({ success: true, data: { queuedCount: queued } });
+});
+
+// POST /admin/payments
+apiRouter.post('/admin/payments', adminAuthChain, requirePermission('payments.record'), validateBody(paymentCreateSchema), async (req: Request, res: Response) => {
+  const b = req.body;
+  const member = await dbOperations.getMemberById(b.memberId);
+  if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+  if (req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId) {
+    return res.status(403).json({ success: false, error: 'Forbidden: Member outside your regional jurisdiction.' });
+  }
+
+  const { start: periodStart, end: periodEnd } = periodBounds(b.period, b.paidForDate);
+  const existing = await query(
+    `SELECT id FROM payments WHERE member_id = $1 AND period = $2 AND period_start = $3 AND status = 'paid'`,
+    [b.memberId, b.period, periodStart]
+  );
+  if (existing.rows.length > 0) {
+    return res.status(409).json({
+      success: false,
+      error: `A contribution has already been recorded for this member for ${periodStart} to ${periodEnd}.`,
+      fields: { paidForDate: 'Already paid for this period' },
+    });
+  }
+
+  const payment = await dbOperations.createPayment({
+    memberId: b.memberId,
+    planId: b.planId,
+    regionId: member.regionId,
+    amountEtb: b.amountEtb,
+    period: b.period,
+    periodStart,
+    periodEnd,
+    method: b.method,
+    reference: b.reference,
+    bank: b.bank,
+    receivedBy: req.admin!.fullName,
+    receiptNo: await dbOperations.getNextReceiptNumber(),
+    note: b.note,
+  });
+
+  await dbOperations.createAuditLog({
+    adminId: req.admin?.id,
+    action: 'payment.record',
+    entity: 'payments',
+    entityId: payment.id,
+    after: { receiptNo: payment.receiptNo, amountEtb: payment.amountEtb, period: payment.period, memberNo: member.memberNo },
+    ip: req.ip,
+  });
+
+  emailService.sendReceiptEmail(member.email, member.fullName, payment.receiptNo, payment.amountEtb, payment.period);
+  if (process.env.FEATURE_SMS === 'true') {
+    afroSmsService.sendSms(member.phone, `OPHEA: Received ${payment.amountEtb} ETB contribution from ${member.fullName}. Receipt #${payment.receiptNo}. Thank you!`);
+  }
+
+  const full = await dbOperations.getPaymentById(payment.id);
+  return res.status(201).json({ success: true, data: toPaymentDto(full, getLang(req)) });
+});
 
 // GET /admin/payments
-apiRouter.get(
-  '/admin/payments',
-  adminAuthChain,
-  requirePermission('payments'),
-  requireRegionScope,
-  async (req: Request, res: Response) => {
-    const payments = await dbOperations.getPayments({
-      memberId: req.query.memberId as string,
-      regionId: req.query.regionId as string,
-      status: req.query.status as string,
-      period: req.query.period as string,
-      page: parseInt(String(req.query.page || '1'), 10),
-      pageSize: parseInt(String(req.query.pageSize || '20'), 10),
-    });
-
-    return res.json({
-      success: true,
-      data: payments.items,
-      meta: payments.meta,
-    });
-  }
-);
+apiRouter.get('/admin/payments', adminAuthChain, requirePermission('payments'), requireRegionScope, async (req: Request, res: Response) => {
+  const s = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const payments = await dbOperations.getPayments({
+    memberId: s(req.query.memberId),
+    regionId: s(req.query.regionId),
+    status: s(req.query.status),
+    period: s(req.query.period),
+    method: s(req.query.method),
+    q: s(req.query.q),
+    from: s(req.query.from),
+    to: s(req.query.to),
+    page: parseInt(String(req.query.page || '1'), 10),
+    pageSize: parseInt(String(req.query.pageSize || '20'), 10),
+  });
+  const lang = getLang(req);
+  return res.json({ success: true, data: payments.items.map((p: any) => toPaymentDto(p, lang)), meta: payments.meta });
+});
 
 // GET /admin/payments/:id
-apiRouter.get(
-  '/admin/payments/:id',
-  adminAuthChain,
-  requirePermission('payments'),
-  async (req: Request, res: Response) => {
-    const payment = await dbOperations.getPaymentById(req.params.id);
-    if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
-    return res.json({ success: true, data: payment });
+apiRouter.get('/admin/payments/:id', adminAuthChain, requirePermission('payments'), requireRegionScope, async (req: Request, res: Response) => {
+  const payment = await dbOperations.getPaymentById(req.params.id);
+  if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
+  if (req.admin?.role === 'RegionalAdmin' && payment.regionId !== req.admin.regionId) {
+    return res.status(403).json({ success: false, error: 'Forbidden' });
   }
-);
+  return res.json({ success: true, data: toPaymentDto(payment, getLang(req)) });
+});
 
 // POST /admin/payments/:id/void
-apiRouter.post(
-  '/admin/payments/:id/void',
-  adminAuthChain,
-  requirePermission('payments.void'),
-  async (req: Request, res: Response) => {
-    const voided = await dbOperations.voidPayment(req.params.id, req.body.note);
-    if (!voided) return res.status(404).json({ success: false, error: 'Payment not found' });
+apiRouter.post('/admin/payments/:id/void', adminAuthChain, requirePermission('payments.void'), async (req: Request, res: Response) => {
+  const note = String(req.body?.note || '').trim();
+  if (!note) return res.status(400).json({ success: false, error: 'A reason is required to void a payment', fields: { note: 'Required' } });
+  const existing = await dbOperations.getPaymentById(req.params.id);
+  if (!existing) return res.status(404).json({ success: false, error: 'Payment not found' });
+  if (existing.status === 'void') return res.status(409).json({ success: false, error: 'Payment is already void' });
 
-    await dbOperations.createAuditLog({
-      adminId: req.admin?.id,
-      action: 'payment.void',
-      entity: 'payments',
-      entityId: req.params.id,
-      ip: req.ip,
-    });
-
-    return res.json({ success: true, data: voided });
-  }
-);
+  await dbOperations.voidPayment(req.params.id, note);
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'payment.void', entity: 'payments', entityId: req.params.id, after: { reason: note }, ip: req.ip });
+  return res.json({ success: true, data: toPaymentDto(await dbOperations.getPaymentById(req.params.id), getLang(req)) });
+});
 
 // GET /admin/payments/:id/receipt?format=pdf
-apiRouter.get(
-  '/admin/payments/:id/receipt',
-  adminAuthChain,
-  requirePermission('payments'),
-  async (req: Request, res: Response) => {
-    const payment = await dbOperations.getPaymentById(req.params.id);
-    if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
-
-    const pdfBuffer = await exportService.generateReceiptPdf(payment);
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="receipt-${payment.receiptNo}.pdf"`);
-    return res.send(pdfBuffer);
-  }
-);
-
-// GET /admin/payments/unpaid
-apiRouter.get(
-  '/admin/payments/unpaid',
-  adminAuthChain,
-  requirePermission('payments'),
-  async (req: Request, res: Response) => {
-    const period = (req.query.period as string) || 'monthly';
-    const targetDate = (req.query.date as string) || new Date().toISOString().split('T')[0];
-    const d = new Date(targetDate);
-    const start = period === 'monthly'
-      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
-      : targetDate;
-
-    const regionCond = req.query.regionId ? 'AND m.region_id = $2' : '';
-    const params = req.query.regionId ? [start, req.query.regionId] : [start];
-
-    const result = await query(
-      `SELECT m.id, m.member_no, m.full_name, m.phone, m.email, m.region_id,
-              m.sector_id, m.last_payment_date, m.last_payment_amount,
-              r.name as region_name, s.label as sector_label
-       FROM members m
-       LEFT JOIN regions r ON m.region_id = r.id
-       LEFT JOIN lookup_sectors s ON m.sector_id = s.id
-       WHERE m.membership_status IN ('active', 'pending')
-       ${regionCond}
-       AND NOT EXISTS (
-         SELECT 1 FROM payments p
-         WHERE p.member_id = m.id AND p.status = 'paid' AND p.period_start = $1
-       )
-       ORDER BY m.full_name ASC
-       LIMIT 500`,
-      params
-    );
-
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  }
-);
-
-// GET /admin/contribution-plans
-apiRouter.get('/admin/contribution-plans', adminAuthChain, async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM contribution_plans ORDER BY amount_etb ASC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-/* ==========================================================================
-   6. ADMIN: CONTENT CMS (Announcements, Programs, Objectives, Partners)
-   ========================================================================== */
-
-// Announcements CRUD
-apiRouter.get('/admin/announcements', adminAuthChain, requirePermission('announcements'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM announcements ORDER BY created_at DESC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-apiRouter.post('/admin/announcements', adminAuthChain, requirePermission('announcements'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const id = crypto.randomUUID();
-  const slug = (b.slug || b.title?.en || `post-${Date.now()}`).toLowerCase().replace(/[^a-z0-9]+/g, '-');
-
-  const resIns = await query(
-    `INSERT INTO announcements (
-      id, slug, type, title, summary, body, deadline, event_start_at, event_end_at,
-      registration_open, registration_url, status, published_at, cover_image_url, created_by
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW(),$13,$14) RETURNING *`,
-    [
-      id,
-      slug,
-      b.type || 'news',
-      JSON.stringify(b.title || { en: 'Announcement' }),
-      JSON.stringify(b.summary || { en: '' }),
-      JSON.stringify(b.body || { en: '' }),
-      b.deadline || null,
-      b.eventStartAt || null,
-      b.eventEndAt || null,
-      Boolean(b.registrationOpen),
-      b.registrationUrl || null,
-      b.status || 'published',
-      b.coverImageUrl || null,
-      req.admin?.fullName || 'Admin',
-    ]
-  );
-
-  return res.status(201).json({ success: true, data: mapRow(resIns.rows[0]) });
-});
-
-apiRouter.patch('/admin/announcements/:id/publish', adminAuthChain, requirePermission('announcements'), async (req: Request, res: Response) => {
-  const resUp = await query("UPDATE announcements SET status = 'published', published_at = NOW() WHERE id = $1 RETURNING *", [req.params.id]);
-  return res.json({ success: true, data: mapRow(resUp.rows[0]) });
-});
-
-apiRouter.patch('/admin/announcements/:id/archive', adminAuthChain, requirePermission('announcements'), async (req: Request, res: Response) => {
-  const resUp = await query("UPDATE announcements SET status = 'archived' WHERE id = $1 RETURNING *", [req.params.id]);
-  return res.json({ success: true, data: mapRow(resUp.rows[0]) });
-});
-
-// Contact Messages & Subscribers
-apiRouter.get('/admin/messages', adminAuthChain, requirePermission('messages'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM contact_messages ORDER BY created_at DESC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-apiRouter.patch('/admin/messages/:id', adminAuthChain, requirePermission('messages'), async (req: Request, res: Response) => {
-  const { status } = req.body;
-  const result = await query('UPDATE contact_messages SET status = $1 WHERE id = $2 RETURNING *', [status, req.params.id]);
-  return res.json({ success: true, data: mapRow(result.rows[0]) });
-});
-
-apiRouter.get('/admin/subscribers', adminAuthChain, requirePermission('subscribers'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM newsletter_subscribers ORDER BY created_at DESC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-/* ==========================================================================
-   6. ADMIN: CONTENT CMS (Programs, Objectives, Partners, Activities, Settings, Regions, Lookups)
-   ========================================================================== */
-
-// Programs CRUD
-apiRouter.get('/admin/programs', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM programs ORDER BY COALESCE(order_index, sort_order, 0) ASC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-apiRouter.post('/admin/programs', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const id = crypto.randomUUID();
-  const slug = (b.slug || b.title?.en || `program-${Date.now()}`).toString().toLowerCase().replace(/[^a-z0-9]+/g, '-');
-  const ins = await query(
-    `INSERT INTO programs (id, slug, icon, title, summary, body, sort_order, is_active, is_published)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [
-      id,
-      slug,
-      b.iconUrl || b.icon_url || 'Circle',
-      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
-      JSON.stringify(b.summary && typeof b.summary === 'object' ? b.summary : { en: b.summary || '' }),
-      JSON.stringify(b.body && typeof b.body === 'object' ? b.body : { en: b.body || '' }),
-      b.sortOrder ?? 0,
-      b.isActive ?? true,
-      b.isPublished ?? true,
-    ]
-  );
-  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
-});
-
-apiRouter.put('/admin/programs/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const up = await query(
-    `UPDATE programs
-     SET title = $1,
-         summary = $2,
-         body = $3,
-         icon = $4,
-         sort_order = $5,
-         is_active = $6,
-         is_published = COALESCE($7, is_published)
-     WHERE id = $8 RETURNING *`,
-    [
-      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
-      JSON.stringify(b.summary && typeof b.summary === 'object' ? b.summary : { en: b.summary || '' }),
-      JSON.stringify(b.body && typeof b.body === 'object' ? b.body : { en: b.body || '' }),
-      b.iconUrl || b.icon_url || 'Circle',
-      b.sortOrder ?? 0,
-      b.isActive ?? true,
-      b.isPublished ?? null,
-      req.params.id,
-    ]
-  );
-  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: mapRow(up.rows[0]) });
-});
-
-apiRouter.delete('/admin/programs/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const del = await query('DELETE FROM programs WHERE id = $1 RETURNING *', [req.params.id]);
-  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: { deleted: true } });
-});
-
-// Objectives CRUD
-apiRouter.get('/admin/objectives', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM objectives ORDER BY kind, sort_order');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-apiRouter.post('/admin/objectives', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const id = crypto.randomUUID();
-  const ins = await query(
-    `INSERT INTO objectives (id, kind, title, description, sort_order)
-     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-    [
-      id,
-      b.kind || 'general',
-      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
-      JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }),
-      b.sortOrder ?? 0,
-    ]
-  );
-  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
-});
-
-apiRouter.put('/admin/objectives/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const up = await query(
-    `UPDATE objectives
-     SET kind = COALESCE($1, kind),
-         title = COALESCE($2, title),
-         description = COALESCE($3, description),
-         sort_order = COALESCE($4, sort_order)
-     WHERE id = $5 RETURNING *`,
-    [
-      b.kind ?? null,
-      b.title ? JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }) : null,
-      b.description ? JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }) : null,
-      b.sortOrder ?? null,
-      req.params.id,
-    ]
-  );
-  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: mapRow(up.rows[0]) });
-});
-
-apiRouter.delete('/admin/objectives/:id', adminAuthChain, requirePermission('programs'), async (req: Request, res: Response) => {
-  const del = await query('DELETE FROM objectives WHERE id = $1 RETURNING *', [req.params.id]);
-  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: { deleted: true } });
-});
-
-// Partners CRUD
-apiRouter.get('/admin/partners', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM partners ORDER BY COALESCE(order_index, sort_order, 0) ASC, name ASC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-apiRouter.post('/admin/partners', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const id = crypto.randomUUID();
-  const ins = await query(
-    `INSERT INTO partners (id, name, website_url, logo_url, sort_order, is_active, is_published)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [
-      id,
-      b.name || '',
-      b.website || b.websiteUrl || null,
-      b.logoUrl || b.logo_url || null,
-      b.sortOrder ?? 0,
-      b.isActive ?? true,
-      b.isPublished ?? true,
-    ]
-  );
-  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
-});
-
-apiRouter.put('/admin/partners/:id', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const up = await query(
-    `UPDATE partners
-     SET name = COALESCE($1, name),
-         website_url = COALESCE($2, website_url),
-         logo_url = COALESCE($3, logo_url),
-         sort_order = COALESCE($4, sort_order),
-         is_active = COALESCE($5, is_active),
-         is_published = COALESCE($6, is_published)
-     WHERE id = $7 RETURNING *`,
-    [
-      b.name ?? null,
-      b.website ?? b.websiteUrl ?? null,
-      b.logoUrl ?? b.logo_url ?? null,
-      b.sortOrder ?? null,
-      b.isActive ?? null,
-      b.isPublished ?? null,
-      req.params.id,
-    ]
-  );
-  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: mapRow(up.rows[0]) });
-});
-
-apiRouter.delete('/admin/partners/:id', adminAuthChain, requirePermission('partners'), async (req: Request, res: Response) => {
-  const del = await query('DELETE FROM partners WHERE id = $1 RETURNING *', [req.params.id]);
-  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: { deleted: true } });
-});
-
-// Activities CRUD
-apiRouter.get('/admin/activities', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM activities ORDER BY activity_date DESC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-apiRouter.post('/admin/activities', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const id = crypto.randomUUID();
-  const ins = await query(
-    `INSERT INTO activities (id, title, description, activity_date, image_url, is_public)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [
-      id,
-      JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }),
-      JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }),
-      b.activityDate || null,
-      b.imageUrl || b.image_url || null,
-      b.isPublic ?? true,
-    ]
-  );
-  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
-});
-
-apiRouter.put('/admin/activities/:id', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const up = await query(
-    `UPDATE activities
-     SET title = COALESCE($1, title),
-         description = COALESCE($2, description),
-         activity_date = COALESCE($3, activity_date),
-         image_url = COALESCE($4, image_url),
-         is_public = COALESCE($5, is_public)
-     WHERE id = $6 RETURNING *`,
-    [
-      b.title ? JSON.stringify(b.title && typeof b.title === 'object' ? b.title : { en: b.title || '' }) : null,
-      b.description ? JSON.stringify(b.description && typeof b.description === 'object' ? b.description : { en: b.description || '' }) : null,
-      b.activityDate ?? null,
-      b.imageUrl ?? b.image_url ?? null,
-      b.isPublic ?? null,
-      req.params.id,
-    ]
-  );
-  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: mapRow(up.rows[0]) });
-});
-
-apiRouter.delete('/admin/activities/:id', adminAuthChain, requirePermission('activities'), async (req: Request, res: Response) => {
-  const del = await query('DELETE FROM activities WHERE id = $1 RETURNING *', [req.params.id]);
-  if (del.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: { deleted: true } });
-});
-
-// Site settings
-apiRouter.get('/admin/settings/:key', adminAuthChain, requirePermission('settings.site'), async (req: Request, res: Response) => {
-  const result = await query('SELECT value FROM site_settings WHERE key = $1', [req.params.key]);
-  if (result.rows.length === 0) return res.json({ success: true, data: null });
-  return res.json({ success: true, data: result.rows[0].value });
-});
-
-apiRouter.put('/admin/settings/:key', adminAuthChain, requirePermission('settings.site'), async (req: Request, res: Response) => {
-  const raw = req.body;
-  const value = raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length === 1 && 'value' in raw ? raw.value : raw;
-  await query(
-    `INSERT INTO site_settings (key, value) VALUES ($1, $2)
-     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-    [req.params.key, JSON.stringify(value)]
-  );
-  return res.json({ success: true, data: value });
-});
-
-// Regions CRUD
-apiRouter.get('/admin/regions', adminAuthChain, requirePermission('regions'), async (req: Request, res: Response) => {
-  const result = await query(
-    `SELECT * FROM regions ORDER BY COALESCE(name->>'en', name->>'am', name->>'om', name::text) ASC`
-  );
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-apiRouter.post('/admin/regions', adminAuthChain, requirePermission('regions'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const id = crypto.randomUUID();
-  const ins = await query(
-    `INSERT INTO regions (id, name, parent_id, type, is_active, sort_order)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
-    [
-      id,
-      JSON.stringify(b.name && typeof b.name === 'object' ? b.name : { en: b.name || '' }),
-      b.parentId || b.parent_id || null,
-      b.type || 'region',
-      b.isActive ?? true,
-      b.sortOrder ?? 0,
-    ]
-  );
-  return res.status(201).json({ success: true, data: mapRow(ins.rows[0]) });
-});
-
-apiRouter.put('/admin/regions/:id', adminAuthChain, requirePermission('regions'), async (req: Request, res: Response) => {
-  const b = req.body;
-  const up = await query(
-    `UPDATE regions
-     SET name = COALESCE($1, name),
-         parent_id = COALESCE($2, parent_id),
-         type = COALESCE($3, type),
-         is_active = COALESCE($4, is_active)
-     WHERE id = $5 RETURNING *`,
-    [
-      b.name ? JSON.stringify(b.name && typeof b.name === 'object' ? b.name : { en: b.name || '' }) : null,
-      b.parentId ?? b.parent_id ?? null,
-      b.type ?? null,
-      b.isActive ?? null,
-      req.params.id,
-    ]
-  );
-  if (up.rows.length === 0) return res.status(404).json({ success: false, error: 'Not found' });
-  return res.json({ success: true, data: mapRow(up.rows[0]) });
-});
-
-// Lookups
-apiRouter.get('/admin/lookups/:type', adminAuthChain, requirePermission('lookups'), async (req: Request, res: Response) => {
-  const tableMap: Record<string, string> = {
-    sectors: 'lookup_sectors',
-    fields: 'lookup_fields_of_study',
-    'graduation-levels': 'lookup_graduation_levels',
-  };
-  const table = tableMap[req.params.type];
-  if (!table) return res.status(400).json({ success: false, error: 'Invalid lookup type' });
-  const result = await query(`SELECT * FROM ${table} WHERE is_active = true ORDER BY sort_order ASC`);
-  return res.json({ success: true, data: result.rows.map(mapRow) });
+apiRouter.get('/admin/payments/:id/receipt', adminAuthChain, requirePermission('payments'), async (req: Request, res: Response) => {
+  const payment = await dbOperations.getPaymentById(req.params.id);
+  if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
+  const pdfBuffer = await exportService.generateReceiptPdf(payment);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="receipt-${payment.receiptNo}.pdf"`);
+  return res.send(pdfBuffer);
 });
 
 /* ==========================================================================
@@ -1903,139 +858,14 @@ apiRouter.post('/admin/sms/campaigns', adminAuthChain, requirePermission('sms'),
   return res.status(201).json({ success: true, data: campaign });
 });
 
-// GET /admin/sms/campaigns
-apiRouter.get('/admin/sms/campaigns', adminAuthChain, requirePermission('sms'), async (req: Request, res: Response) => {
-  const result = await query('SELECT * FROM sms_campaigns ORDER BY created_at DESC');
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
 // GET /admin/sms/balance
 apiRouter.get('/admin/sms/balance', adminAuthChain, requirePermission('sms'), async (req: Request, res: Response) => {
-  const bal = await afroSmsService.getBalance();
-  return res.json({ success: true, data: bal });
+  const bal: any = await afroSmsService.getBalance();
+  const n = typeof bal === 'number' ? bal : Number(bal?.balance ?? 0);
+  return res.json({ success: true, data: { balance: Number.isFinite(n) ? n : 0 } });
 });
 
-/* ==========================================================================
-   8. ADMIN: USERS, ROLES, PERMISSIONS & AUDIT LOGS
-   ========================================================================== */
-
-// GET /admin/meta/permissions (Single source of truth for UI checkboxes)
-apiRouter.get('/admin/meta/permissions', adminAuthChain, (req: Request, res: Response) => {
-  const permissions = [
-    { key: 'dashboard', label: 'View Dashboard & Analytics' },
-    { key: 'members', label: 'View Members Register' },
-    { key: 'members.approve', label: 'Approve & Reject Registrations' },
-    { key: 'members.edit', label: 'Edit Member Details' },
-    { key: 'members.export', label: 'Export Members (Excel/PDF)' },
-    { key: 'payments', label: 'View Payments' },
-    { key: 'payments.record', label: 'Record Member Contributions' },
-    { key: 'payments.void', label: 'Void Payments' },
-    { key: 'contributions.dashboard', label: 'View Contributions Financial Charts' },
-    { key: 'announcements', label: 'Manage Announcements & Vacancies' },
-    { key: 'programs', label: 'Manage Programs' },
-    { key: 'partners', label: 'Manage Partners' },
-    { key: 'activities', label: 'Manage Activities' },
-    { key: 'sms', label: 'Send SMS & Campaigns' },
-    { key: 'messages', label: 'Manage Contact Inbox' },
-    { key: 'subscribers', label: 'Manage Newsletter Subscribers' },
-    { key: 'regions', label: 'Manage Regions & Zones' },
-    { key: 'lookups', label: 'Manage System Lookups' },
-    { key: 'settings.site', label: 'Manage Site Settings' },
-    { key: 'audit', label: 'View Audit Logs' },
-    { key: 'jobs', label: 'Manage Job Board' },
-    { key: 'b2b', label: 'Manage B2B Directory' },
-    { key: 'investments', label: 'Manage Investment Opportunities' },
-    { key: 'resources', label: 'Manage Tourism Research Repository' },
-  ];
-  return res.json({ success: true, data: permissions });
-});
-
-// GET /admin/users (SuperAdmin only)
-apiRouter.get('/admin/users', adminAuthChain, requireSuperAdmin, async (req: Request, res: Response) => {
-  const result = await query(
-    `SELECT u.id, u.username, u.email, u.full_name, u.role, u.permissions, u.region_id, u.is_active, u.must_change_password, u.last_login, u.created_at, r.name as region_name
-     FROM admin_users u
-     LEFT JOIN regions r ON u.region_id = r.id
-     ORDER BY u.created_at DESC`
-  );
-  return res.json({ success: true, data: result.rows.map(mapRow) });
-});
-
-// POST /admin/users (SuperAdmin creates admin)
-const createUserSchema = z.object({
-  username: z.string().min(3),
-  email: z.string().email(),
-  password: z.string().min(8),
-  fullName: z.string().min(2),
-  role: z.enum(['SuperAdmin', 'RegionalAdmin', 'Finance', 'Editor']),
-  permissions: z.array(z.string()).optional(),
-  regionId: z.string().optional(),
-});
-
-apiRouter.post('/admin/users', adminAuthChain, requireSuperAdmin, validateBody(createUserSchema), async (req: Request, res: Response) => {
-  const b = req.body;
-  if (b.role === 'RegionalAdmin' && !b.regionId) {
-    return res.status(400).json({ success: false, error: 'regionId is required for RegionalAdmin role' });
-  }
-
-  const hash = await bcrypt.hash(b.password, 10);
-  const id = crypto.randomUUID();
-
-  const resUser = await query(
-    `INSERT INTO admin_users (
-      id, username, email, password_hash, full_name, role, permissions, region_id, is_active, must_change_password
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, true) RETURNING id, username, email, full_name, role, permissions, region_id, is_active`,
-    [id, b.username.toLowerCase(), b.email.toLowerCase(), hash, b.fullName, b.role, b.permissions || [], b.regionId || null]
-  );
-
-  await dbOperations.createAuditLog({
-    adminId: req.admin?.id,
-    action: 'admin.create',
-    entity: 'admin_users',
-    entityId: id,
-    after: { username: b.username, email: b.email, role: b.role },
-    ip: req.ip,
-  });
-
-  return res.status(201).json({ success: true, data: mapRow(resUser.rows[0]) });
-});
-
-// PATCH /admin/users/:id/active
-apiRouter.patch('/admin/users/:id/active', adminAuthChain, requireSuperAdmin, async (req: Request, res: Response) => {
-  const { isActive } = req.body;
-  const resUp = await query('UPDATE admin_users SET is_active = $1 WHERE id = $2 RETURNING id, username, is_active', [Boolean(isActive), req.params.id]);
-  return res.json({ success: true, data: mapRow(resUp.rows[0]) });
-});
-
-// GET /admin/audit-logs
-apiRouter.get('/admin/audit-logs', adminAuthChain, requirePermission('audit'), async (req: Request, res: Response) => {
-  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10));
-  const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || '25'), 10)));
-  const offset = (page - 1) * pageSize;
-
-  const countRes = await query('SELECT count(*) as total FROM audit_logs');
-  const total = parseInt(countRes.rows[0].total, 10);
-
-  const listRes = await query(
-    `SELECT a.*, u.full_name as admin_name, u.username as admin_username 
-     FROM audit_logs a 
-     LEFT JOIN admin_users u ON a.admin_id = u.id 
-     ORDER BY a.created_at DESC 
-     LIMIT $1 OFFSET $2`,
-    [pageSize, offset]
-  );
-
-  return res.json({
-    success: true,
-    data: listRes.rows.map(mapRow),
-    meta: {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.ceil(total / pageSize) || 1,
-    },
-  });
-});
+apiRouter.use(adminContentRouter);
 
 /* ==========================================================================
    9. PHASE 4: GROWTH & MEMBER PORTAL (Gated by FEATURE_MEMBER_PORTAL)

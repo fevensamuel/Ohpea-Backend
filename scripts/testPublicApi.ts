@@ -1,5 +1,5 @@
 /**
- * Comprehensive Test Suite for OHPEA Public API Surface
+ * Comprehensive Test Suite for OPHEA Public API Surface
  * Tests all requirements from Section 5:
  * - GET /api/public/stats (4 numeric fields, ignores stale Authorization)
  * - GET /api/public/announcements with pagination
@@ -18,7 +18,7 @@ import 'dotenv/config';
 const BASE_URL = process.env.TEST_BASE_URL || 'http://localhost:3000';
 
 async function runTests() {
-  console.log(`[PublicApiTests] Running OHPEA public API test suite against ${BASE_URL}...\n`);
+  console.log(`[PublicApiTests] Running OPHEA public API test suite against ${BASE_URL}...\n`);
   let passed = 0;
   let failed = 0;
 
@@ -40,7 +40,7 @@ async function runTests() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      usernameOrEmail: process.env.SEED_ADMIN_EMAIL || 'admin@ohpea.org',
+      usernameOrEmail: process.env.SEED_ADMIN_EMAIL || 'admin@ophea.org',
       password: process.env.SEED_ADMIN_PASSWORD || 'Admin12345!ChangeMe',
     }),
   });
@@ -255,7 +255,7 @@ async function runTests() {
     }
     const regJson = (await regRes.json()) as any;
     const memberId = regJson.data?.memberId;
-    if (!memberId || !/^OHPEA-\d{4}-\d{5}$/.test(regJson.data?.memberNo || '')) {
+    if (!memberId || !/^OPHEA-\d{4}-\d{5}$/.test(regJson.data?.memberNo || '')) {
       throw new Error('Expected memberId and a generated memberNo in registration response');
     }
     if (regJson.data?.registrationStatus !== 'pending' || regJson.data?.membershipStatus !== 'pending') {

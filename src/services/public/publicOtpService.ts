@@ -59,7 +59,7 @@ export async function sendRegistrationOtp(
   }
 
   // Send SMS via existing AfroMessage service
-  const msg = `OHPEA: Your public registration verification code is ${code}. It expires in 5 minutes.`;
+  const msg = `OPHEA: Your public registration verification code is ${code}. It expires in 5 minutes.`;
   await afroSmsService.sendSms(phone, msg);
 
   return {

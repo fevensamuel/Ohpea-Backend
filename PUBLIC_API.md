@@ -1,6 +1,6 @@
-# OHPEA Public API Reference (`/api/public/*`)
+# OPHEA Public API Reference (`/api/public/*`)
 
-This document details the public, unauthenticated API surface designed for the **OHPEA Public Website** (Prompt 3).
+This document details the public, unauthenticated API surface designed for the **OPHEA Public Website** (Prompt 3).
 All endpoints are mounted at `/api/public` without authentication barriers.
 
 ---
@@ -15,7 +15,7 @@ All endpoints are mounted at `/api/public` without authentication barriers.
 
 ## 1. Response Envelope Standards
 
-All responses follow the unified OHPEA API contract:
+All responses follow the unified OPHEA API contract:
 
 ### Single Entity Response
 ```json
@@ -76,7 +76,7 @@ curl -s http://localhost:3000/api/public/site-settings
   "data": {
     "name": "Oromia Hospitality & Tourism Professionals Association",
     "tagline": "Advancing Professionalism & Sustainable Tourism in Oromia",
-    "email": "info@ohpea.org",
+    "email": "info@ophea.org",
     "phone": "+251911223344",
     "address": "Addis Ababa / Finfinne, Bole Sub-City, Oromia, Ethiopia",
     "coordinates": {
@@ -84,10 +84,10 @@ curl -s http://localhost:3000/api/public/site-settings
       "lng": 39.27
     },
     "social": {
-      "facebook": "https://facebook.com/ohpea.official",
-      "twitter": "https://x.com/ohpea_official",
-      "linkedin": "https://linkedin.com/company/ohpea",
-      "youtube": "https://youtube.com/@ohpea_oromia"
+      "facebook": "https://facebook.com/ophea.official",
+      "twitter": "https://x.com/ophea_official",
+      "linkedin": "https://linkedin.com/company/ophea",
+      "youtube": "https://youtube.com/@ophea_oromia"
     },
     "hotlines": [
       "+251911223344",
@@ -388,7 +388,7 @@ curl -X POST http://localhost:3000/api/public/contact \
     "email": "hawine@example.com",
     "phone": "+251922334455",
     "subject": "Membership Application Inquiry",
-    "message": "Hello OHPEA, I submitted my educational credentials yesterday and wanted to follow up on the verification timeline."
+    "message": "Hello OPHEA, I submitted my educational credentials yesterday and wanted to follow up on the verification timeline."
   }'
 ```
 

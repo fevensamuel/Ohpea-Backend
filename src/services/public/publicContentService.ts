@@ -1,58 +1,34 @@
 import { query } from '../../backend/database.js';
+import { readSetting } from '../../backend/adminContentRoutes.js';
 
 export async function getPublicSiteSettings() {
-  const result = await query('SELECT key, value FROM site_settings');
-  const rawSettings: Record<string, any> = {};
-  for (const row of result.rows) {
-    rawSettings[row.key] = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-  }
-
-  const contact = rawSettings['contact'] || {};
-  const social = rawSettings['social'] || rawSettings['socials'] || null;
-  const address = rawSettings['address'] || contact.address || null;
-  const coordinates = rawSettings['coordinates'] || { lat: 8.54, lng: 39.27 };
-  const hotlines = rawSettings['hotlines'] || contact.phones || [];
-  const branding = rawSettings['branding'] || rawSettings['general'] || {};
+  const [branding, contact, socials] = await Promise.all([readSetting('branding'), readSetting('contact'), readSetting('socials')]);
+  const i18n = (en: string, om = '') => ({ en, om, am: '' });
+  const socialLinks = Object.fromEntries(Object.entries(socials).filter(([, v]) => typeof v === 'string' && v.trim() !== ''));
+  const phones = [contact.phonePrimary, contact.phoneSecondary, branding.supportPhone].filter((p: string, i: number, a: string[]) => p && a.indexOf(p) === i);
+  const emails = [contact.emailGeneral, contact.emailSupport, branding.supportEmail].filter((e: string, i: number, a: string[]) => e && a.indexOf(e) === i);
+  const coords = String(contact.mapCoordinates || '').trim();
+  const mapLink = /^https?:\/\//i.test(coords) ? coords : coords ? `https://www.google.com/maps?q=${encodeURIComponent(coords)}` : '';
 
   return {
-    name: branding.name || branding.orgName || 'Oromia Hospitality & Tourism Professionals Association',
-    tagline: branding.tagline || 'Advancing Professionalism & Sustainable Tourism in Oromia',
-    email: contact.email || (Array.isArray(contact.emails) ? contact.emails[0] : null),
-    phone: contact.phone || (Array.isArray(contact.phones) ? contact.phones[0] : null),
-    address: typeof address === 'string' ? address : address?.formatted || null,
-    coordinates,
-    social: social
-      ? {
-          facebook: social.facebook || null,
-          twitter: social.twitter || null,
-          linkedin: social.linkedin || null,
-          youtube: social.youtube || null,
-        }
-      : null,
-    hotlines: Array.isArray(hotlines) ? hotlines : [hotlines],
-  };
-}
-
-export async function getPublicStatsNumbers() {
-  const memRes = await query(
-    `SELECT COUNT(*) as count FROM members WHERE membership_status = 'active'`
-  );
-  const totalMembers = parseInt(memRes.rows[0]?.count || '0', 10);
-
-  const setRes = await query(
-    `SELECT key, value FROM site_settings WHERE key IN ('stats.accreditedHotels', 'stats.certifiedGuides', 'stats.trainingGraduates')`
-  );
-  const statsMap: Record<string, number> = {};
-  for (const row of setRes.rows) {
-    const val = typeof row.value === 'string' ? JSON.parse(row.value) : row.value;
-    statsMap[row.key] = Number(val) || 0;
-  }
-
-  return {
-    totalMembers,
-    accreditedHotels: statsMap['stats.accreditedHotels'] ?? 87,
-    certifiedGuides: statsMap['stats.certifiedGuides'] ?? 143,
-    trainingGraduates: statsMap['stats.trainingGraduates'] ?? 320,
+    orgName: i18n(branding.orgName, branding.orgNameOm),
+    shortName: 'OPHEA',
+    tagline: i18n(branding.tagline),
+    mission: i18n(branding.mission),
+    vision: i18n(branding.vision),
+    logoUrl: '',
+    contactPhones: phones,
+    contactEmails: emails,
+    address: i18n(contact.address),
+    mapLink,
+    workingHours: contact.workingHours,
+    socialLinks,
+    // convenience aliases (empty when not configured; nothing is invented)
+    name: branding.orgName,
+    email: emails[0] || '',
+    phone: phones[0] || '',
+    hotlines: phones,
+    social: socialLinks,
   };
 }
 

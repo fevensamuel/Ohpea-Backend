@@ -32,7 +32,7 @@ let activePool: any = null;
 let isInMemoryFallback = false;
 
 function createPostgresPool() {
-  const connectionString = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/ohpea';
+  const connectionString = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/ophea';
   const ssl = shouldEnableSsl() ? { rejectUnauthorized: false } : false;
   return new Pool({
     connectionString,
@@ -228,10 +228,15 @@ export async function initDatabase(): Promise<void> {
       interests TEXT[],
       emergency_contact_name TEXT,
       emergency_contact_phone TEXT,
-      graduation_level_id TEXT NOT NULL,
-      occupation_type TEXT NOT NULL,
-      sector_id TEXT NOT NULL,
-      field_of_study_id TEXT NOT NULL,
+      employment_status TEXT,
+      year_established INT,
+      zone_sub_city TEXT,
+      woreda TEXT,
+      institution_name TEXT,
+      graduation_level_id TEXT,
+      occupation_type TEXT,
+      sector_id TEXT,
+      field_of_study_id TEXT,
       professional_category TEXT,
       organization_name TEXT,
       job_title TEXT,
@@ -248,8 +253,8 @@ export async function initDatabase(): Promise<void> {
       consent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       preferred_language TEXT NOT NULL DEFAULT 'en',
       email_verified_at TIMESTAMPTZ,
+      phone_verified_at TIMESTAMPTZ,
       source TEXT NOT NULL DEFAULT 'online',
-      is_demo BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -272,6 +277,7 @@ export async function initDatabase(): Promise<void> {
       period TEXT NOT NULL,
       amount_etb NUMERIC(12,2) NOT NULL,
       applies_to TEXT,
+      description TEXT,
       is_active BOOLEAN NOT NULL DEFAULT true,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -293,7 +299,8 @@ export async function initDatabase(): Promise<void> {
       status TEXT NOT NULL DEFAULT 'paid',
       paid_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       note TEXT,
-      is_demo BOOLEAN NOT NULL DEFAULT false,
+      void_reason TEXT,
+      voided_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -344,6 +351,7 @@ export async function initDatabase(): Promise<void> {
     CREATE TABLE IF NOT EXISTS partners (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      partner_type TEXT NOT NULL DEFAULT 'partner',
       logo_url TEXT,
       website_url TEXT,
       sort_order INT NOT NULL DEFAULT 0,
@@ -356,6 +364,7 @@ export async function initDatabase(): Promise<void> {
       description JSONB NOT NULL,
       activity_date DATE NOT NULL,
       image_url TEXT,
+      location TEXT,
       is_public BOOLEAN NOT NULL DEFAULT true,
       is_demo BOOLEAN NOT NULL DEFAULT false,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -383,6 +392,7 @@ export async function initDatabase(): Promise<void> {
       id TEXT PRIMARY KEY,
       name TEXT,
       email TEXT UNIQUE NOT NULL,
+      language TEXT NOT NULL DEFAULT 'en',
       is_active BOOLEAN NOT NULL DEFAULT true,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -508,6 +518,25 @@ export async function initDatabase(): Promise<void> {
       issued_date DATE NOT NULL,
       notes TEXT
     );
+
+    -- upgrades for databases created by earlier versions
+    ALTER TABLE payments ADD COLUMN IF NOT EXISTS void_reason TEXT;
+    ALTER TABLE payments ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS phone_verified_at TIMESTAMPTZ;
+    ALTER TABLE contribution_plans ADD COLUMN IF NOT EXISTS description TEXT;
+    ALTER TABLE partners ADD COLUMN IF NOT EXISTS partner_type TEXT NOT NULL DEFAULT 'partner';
+    ALTER TABLE activities ADD COLUMN IF NOT EXISTS location TEXT;
+    ALTER TABLE newsletter_subscribers ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'en';
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS employment_status TEXT;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS year_established INT;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS zone_sub_city TEXT;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS woreda TEXT;
+    ALTER TABLE members ADD COLUMN IF NOT EXISTS institution_name TEXT;
+    ALTER TABLE members ALTER COLUMN graduation_level_id DROP NOT NULL;
+    ALTER TABLE members ALTER COLUMN occupation_type DROP NOT NULL;
+    ALTER TABLE members ALTER COLUMN sector_id DROP NOT NULL;
+    ALTER TABLE members ALTER COLUMN field_of_study_id DROP NOT NULL;
+    DELETE FROM woredas WHERE id IN ('wor-adama','wor-bishoftu','wor-shashemene','wor-arssi-negele','wor-jimma-town','wor-agaro','wor-ambo','wor-waliso','wor-asella','wor-bale-robe','wor-faydha','wor-dukem')
   `;
 
   // Execute schema
@@ -529,10 +558,6 @@ export async function initDatabase(): Promise<void> {
 
   // Seed default data
   await seedInitialData(pool);
-
-  if (process.env.SEED_DEMO_DATA === 'true') {
-    await seedDemoData(pool);
-  }
 }
 
 /**
@@ -540,10 +565,10 @@ export async function initDatabase(): Promise<void> {
  */
 async function seedInitialData(pool: any): Promise<void> {
   // 1. Initial SuperAdmin from environment
-  const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@ohpea.org';
+  const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@ophea.org';
   const adminPass = process.env.SEED_ADMIN_PASSWORD || 'Admin12345!ChangeMe';
 
-  const existingAdmin = await pool.query('SELECT id FROM admin_users WHERE email = $1', [adminEmail]);
+  const existingAdmin = await pool.query("SELECT id FROM admin_users WHERE email = $1 OR username = 'superadmin'", [adminEmail]);
   if (existingAdmin.rows.length === 0) {
     const passwordHash = await bcrypt.hash(adminPass, 10);
     const superAdminPermissions = [
@@ -566,15 +591,7 @@ async function seedInitialData(pool: any): Promise<void> {
       'regions',
       'lookups',
       'settings.site',
-      'settings.contact',
-      'translations',
       'audit',
-      'jobs',
-      'b2b',
-      'investments',
-      'resources',
-      'international',
-      'region-resources',
     ];
 
     await pool.query(
@@ -585,7 +602,7 @@ async function seedInitialData(pool: any): Promise<void> {
         'superadmin',
         adminEmail,
         passwordHash,
-        'OHPEA Central Administrator',
+        'OPHEA Central Administrator',
         'SuperAdmin',
         superAdminPermissions,
         true,
@@ -718,17 +735,6 @@ async function seedInitialData(pool: any): Promise<void> {
     }
   }
 
-  // 7. Contribution Plans
-  const plansCount = await pool.query('SELECT count(*) as count FROM contribution_plans');
-  if (parseInt(plansCount.rows[0].count, 10) === 0) {
-    await pool.query(
-      `INSERT INTO contribution_plans (id, name, period, amount_etb, applies_to, is_active)
-       VALUES 
-       ('plan-monthly-100', 'Standard Monthly Contribution', 'monthly', 100.00, 'all', true),
-       ('plan-yearly-1000', 'Standard Annual Contribution', 'yearly', 1000.00, 'all', true)`
-    );
-  }
-
   // 8. Objectives (General, Official, Main, Specific)
   const objCount = await pool.query('SELECT count(*) as count FROM objectives');
   if (parseInt(objCount.rows[0].count, 10) === 0) {
@@ -739,9 +745,9 @@ async function seedInitialData(pool: any): Promise<void> {
         'obj-general',
         'general',
         JSON.stringify({
-          en: 'General Objective of OHPEA',
-          om: 'Kaayyoo Waliigalaa OHPEA',
-          am: 'የOHPEA አጠቃላይ ዓላማ',
+          en: 'General Objective of OPHEA',
+          om: 'Kaayyoo Waliigalaa OPHEA',
+          am: 'የOPHEA አጠቃላይ ዓላማ',
         }),
         JSON.stringify({
           en: 'To promote the development, professionalism, quality, and competitiveness of the hospitality and tourism industry in Oromia by strengthening cooperation among hospitality professionals, improving service standards, and supporting sustainable tourism development.',
@@ -865,427 +871,24 @@ async function seedInitialData(pool: any): Promise<void> {
           p.icon,
           JSON.stringify(p.title),
           JSON.stringify(p.summary),
-          JSON.stringify({ en: `${p.summary.en} Detailed initiatives and annual program goals managed by OHPEA directorates.` }),
+          JSON.stringify(p.summary),
           order++,
         ]
       );
     }
   }
 
-  // 10. Partners
-  const partCount = await pool.query('SELECT count(*) as count FROM partners');
-  if (parseInt(partCount.rows[0].count, 10) === 0) {
-    const partners = [
-      { name: 'Ministry of Culture and Tourism', url: 'https://www.tourismethiopia.gov.et' },
-      { name: 'Oromia Tourism Bureau', url: 'https://tourismoromia.gov.et' },
-      { name: 'Ija Developer', url: 'https://ijadeveloper.com' },
-      { name: 'Sinke Bank', url: 'https://sinkebank.com.et' },
-    ];
-    let i = 1;
-    for (const pt of partners) {
-      await pool.query(
-        'INSERT INTO partners (id, name, logo_url, website_url, sort_order, is_active) VALUES ($1, $2, $3, $4, $5, true)',
-        [`partner-${i}`, pt.name, null, pt.url, i]
-      );
-      i++;
-    }
-  }
-
-  // 11. Site Settings
-  const settingsCount = await pool.query('SELECT count(*) as count FROM site_settings');
-  if (parseInt(settingsCount.rows[0].count, 10) === 0) {
-    const defaultSettings = [
-      {
-        key: 'general',
-        value: {
-          orgName: 'Oromia Hospitality & Tourism Professionals Association',
-          orgNameOm: 'Waldaa Ogeeyyii Hojii Simannaa fi Daawwanna Turizimii Oromiyaa',
-          shortName: 'OHPEA',
-          tagline: 'Advancing Professionalism & Sustainable Tourism in Oromia',
-          foundedYear: 2024,
-        },
-      },
-      {
-        key: 'contact',
-        value: {
-          phones: ['+251911223344', '+251711223344'],
-          emails: ['info@ohpea.org', 'support@ohpea.org'],
-          address: 'Addis Ababa / Finfinne, Bole Sub-City, Oromia, Ethiopia',
-          officeHours: 'Monday - Friday: 8:30 AM - 5:30 PM, Saturday: 9:00 AM - 1:00 PM',
-          mapLink: 'https://maps.google.com/?q=Bole,Addis+Ababa',
-        },
-      },
-      {
-        key: 'socials',
-        value: {
-          facebook: 'https://facebook.com/ohpea.official',
-          telegram: 'https://t.me/ohpea_oromia',
-          linkedin: 'https://linkedin.com/company/ohpea',
-          twitter: 'https://x.com/ohpea_official',
-          youtube: 'https://youtube.com/@ohpea_oromia',
-        },
-      },
-      {
-        key: 'membership_rules',
-        value: {
-          inactiveAfterPeriods: 2, // 2 consecutive unpaid periods marks member at-risk
-          currency: 'ETB',
-          nationalIdType: 'fayda',
-        },
-      },
-    ];
-
-    for (const s of defaultSettings) {
-      await pool.query('INSERT INTO site_settings (key, value) VALUES ($1, $2)', [s.key, JSON.stringify(s.value)]);
-    }
-  }
-}
-
-/**
- * Seed Realistic Demo Data (~150 members, ~600 payments, 8 announcements)
- */
-export async function seedDemoData(pool: any): Promise<void> {
-  if (process.env.SEED_DEMO_DATA !== 'true') {
-    return;
-  }
-
-  const existingDemo = await pool.query('SELECT count(*) as count FROM members WHERE is_demo = true');
-  if (parseInt(existingDemo.rows[0].count, 10) > 0) {
-    return;
-  }
-
-  console.log('[Database Seed] Seeding ~150 demo members and ~600 payments for Phase 1 showcase...');
-
-  const firstNamesM = ['Tolasa', 'Girma', 'Bekele', 'Desta', 'Gemechu', 'Taye', 'Kenna', 'Chala', 'Abdisa', 'Mulugeta', 'Feyisa', 'Dawit'];
-  const firstNamesF = ['Chaltu', 'Lensa', 'Birtukan', 'Hawani', 'Ayantu', 'Hawi', 'Obsi', 'Sifan', 'Meseret', 'Tigist', 'Meti', 'Bontu'];
-  const lastNames = ['Gudeta', 'Benti', 'Dibaba', 'Tola', 'Megersa', 'Abate', 'Worku', 'Alemu', 'Negasa', 'Fufa', 'Bedane', 'Wayesa'];
-
-  const regionsRes = await pool.query('SELECT id, name FROM regions');
-  const regionIds = regionsRes.rows.map((r: any) => r.id);
-
-  const sectorsRes = await pool.query('SELECT id FROM lookup_sectors');
-  const sectorIds = sectorsRes.rows.map((r: any) => r.id);
-
-  const fieldsRes = await pool.query('SELECT id FROM lookup_fields_of_study');
-  const fieldIds = fieldsRes.rows.map((r: any) => r.id);
-
-  const gradRes = await pool.query('SELECT id FROM lookup_graduation_levels');
-  const gradIds = gradRes.rows.map((r: any) => r.id);
-
-  const occTypes = ['private', 'government', 'other'];
-  const pepper = process.env.SERVER_PEPPER || 'ohpea_pepper_2026';
-
-  const memberIds: { id: string; regionId: string; status: string; memberNo: string; name: string }[] = [];
-
-  for (let i = 1; i <= 150; i++) {
-    const isFemale = i % 3 === 0;
-    const firstList = isFemale ? firstNamesF : firstNamesM;
-    const fName = firstList[i % firstList.length];
-    const lName = lastNames[(i * 3) % lastNames.length];
-    const fullName = `${fName} ${lName}`;
-    const gender = isFemale ? 'female' : 'male';
-    const memberNo = `OHPEA-2026-${String(i).padStart(5, '0')}`;
-    const phone = `+2519${String(10000000 + i * 23).padStart(8, '0')}`;
-    const email = `${fName.toLowerCase()}.${lName.toLowerCase()}${i}@example.com`;
-    const regionId = regionIds[i % regionIds.length];
-    const sectorId = sectorIds[i % sectorIds.length];
-    const fieldId = fieldIds[i % fieldIds.length];
-    const gradId = gradIds[i % gradIds.length];
-    const occ = occTypes[i % occTypes.length];
-    const idNum = `FAYDA-${100000000 + i}`;
-    const idHash = crypto.createHash('sha256').update(`fayda:${idNum}:${pepper}`).digest('hex');
-    const idLast4 = String(idNum).slice(-4);
-
-    let regStatus = 'approved';
-    let memStatus = 'active';
-
-    if (i > 135) {
-      regStatus = 'pending';
-      memStatus = 'pending';
-    } else if (i > 125) {
-      regStatus = 'rejected';
-      memStatus = 'inactive';
-    } else if (i % 8 === 0) {
-      memStatus = 'inactive';
-    }
-
-    const memberId = crypto.randomUUID();
-    const createdAt = new Date(Date.now() - (150 - i) * 2 * 86400000).toISOString();
-
-    await pool.query(
-      `INSERT INTO members (
-        id, member_no, full_name, phone, email, gender, graduation_level_id,
-        occupation_type, sector_id, field_of_study_id, organization_name, job_title,
-        region_id, town, id_type, id_number_hash, id_number_last4,
-        registration_status, membership_status, rejection_reason,
-        preferred_language, is_demo, created_at, updated_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,true,$22,$22)`,
-      [
-        memberId,
-        memberNo,
-        fullName,
-        phone,
-        email,
-        gender,
-        gradId,
-        occ,
-        sectorId,
-        fieldId,
-        `${fName} Hospitality Enterprises`,
-        'Department Lead / Manager',
-        regionId,
-        'Adama',
-        'fayda',
-        idHash,
-        idLast4,
-        regStatus,
-        memStatus,
-        regStatus === 'rejected' ? 'Incomplete educational credential documents.' : null,
-        'en',
-        createdAt,
-      ]
-    );
-
-    if (regStatus === 'approved') {
-      memberIds.push({ id: memberId, regionId, status: memStatus, memberNo, name: fullName });
-    }
-  }
-
-  // Seed ~600 payments across last 12 months
-  let receiptCounter = 1;
-  const methods = ['mobile_money', 'bank_transfer', 'cash'];
-  const banks = ['Sinke Bank', 'Commercial Bank of Ethiopia', 'Cooperative Bank of Oromia', 'Telebirr'];
-
-  for (let m = 0; m < memberIds.length; m++) {
-    const mem = memberIds[m];
-    // Each active member has 4-5 payments over the last 12 months
-    const count = mem.status === 'active' ? 5 : 2;
-    for (let p = 0; p < count; p++) {
-      const monthOffset = p * 2;
-      const d = new Date();
-      d.setMonth(d.getMonth() - monthOffset);
-      const year = d.getFullYear();
-      const month = d.getMonth() + 1;
-      const periodStart = `${year}-${String(month).padStart(2, '0')}-01`;
-      const periodEnd = `${year}-${String(month).padStart(2, '0')}-28`;
-      const receiptNo = `RCT-2026-${String(receiptCounter++).padStart(6, '0')}`;
-      const method = methods[(m + p) % methods.length];
-      const bank = banks[(m * 2 + p) % banks.length];
-
-      await pool.query(
-        `INSERT INTO payments (
-          id, member_id, region_id, amount_etb, period, period_start, period_end,
-          method, reference, bank, received_by, receipt_no, status, paid_at, is_demo
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true)`,
-        [
-          crypto.randomUUID(),
-          mem.id,
-          mem.regionId,
-          100.0,
-          'monthly',
-          periodStart,
-          periodEnd,
-          method,
-          `TXN-${Date.now().toString().slice(-6)}-${p}`,
-          bank,
-          'Finance Admin (Auto-Receipt)',
-          receiptNo,
-          'paid',
-          d.toISOString(),
-        ]
-      );
-    }
-  }
-
-  // Seed 8 announcements (vacancies, calls for proposals/research, events)
-  const announcements = [
-    {
-      title: {
-        en: 'Call for Tourism Research Papers: Oromia Heritage & Ecotourism Corridors 2026',
-        om: 'Wamicha Qorannoo Turizimii: Hambaa fi Ikkooturizimii Oromiyaa 2026',
-      },
-      slug: 'call-for-research-papers-2026',
-      type: 'call_for_research',
-      summary: {
-        en: 'OHPEA invites researchers and academics to submit papers on sustainable tourism and economic empowerment in Oromia.',
-      },
-      body: {
-        en: 'The Oromia Hospitality & Tourism Professionals Association (OHPEA) announces a competitive grant opportunity for applied tourism research. Selected papers will be published in the inaugural OHPEA Tourism Review and presented at the Annual Tourism Summit.',
-      },
-      deadline: '2026-12-31',
-    },
-    {
-      title: {
-        en: 'Annual Oromia Hospitality & Tourism Convention 2026',
-        om: 'Yaa\'ii Waggaa Simannaa fi Turizimii Oromiyaa 2026',
-      },
-      slug: 'annual-tourism-convention-2026',
-      type: 'event',
-      summary: {
-        en: 'Join 500+ professionals, investors, and hotel leaders in Adama for networking, keynote panels, and B2B linkages.',
-      },
-      body: {
-        en: 'The flagship event brings together industry experts, hospitality academics, tour operators, and public sector leaders.',
-      },
-      eventStartAt: '2026-11-20T09:00:00Z',
-      eventEndAt: '2026-11-22T17:00:00Z',
-      registrationOpen: true,
-      registrationUrl: 'https://ohpea.org/register-event',
-    },
-    {
-      title: {
-        en: 'Vacancy: Regional Tourism Training Coordinator (Central Oromia)',
-        om: 'Baniinsa Hojii: Qindeessaa Leenjii Turizimii Gidduugaleessa Oromiyaa',
-      },
-      slug: 'vacancy-training-coordinator',
-      type: 'vacancy',
-      summary: {
-        en: 'OHPEA is seeking an experienced hospitality instructor to lead vocational training sessions across zone branches.',
-      },
-      body: {
-        en: 'Applicants must possess at least a BA degree in Hospitality Management or Tourism Management with 3+ years experience.',
-      },
-      deadline: '2026-11-30',
-    },
-    {
-      title: {
-        en: 'Call for Proposals: Community-Based Tourism Master Plan for Bale & Guji',
-        om: 'Wamicha Yaada Pirojekti: Karoora Turizimii Hawaasaa Baalee fi Gujii',
-      },
-      slug: 'call-for-proposals-community-tourism',
-      type: 'call_for_proposal',
-      summary: {
-        en: 'Consultancy firm or team of specialists needed to draft a community tourism handbook and marketing plan.',
-      },
-      body: {
-        en: 'In partnership with regional tourism bureaus, OHPEA seeks comprehensive proposals focusing on ecotourism lodges.',
-      },
-      deadline: '2026-12-15',
-    },
-    {
-      title: {
-        en: 'Executive Workshop on Modern Food Safety & HACCP Standards',
-        om: 'Walgahii Hojii Qulqullina Nyaataa fi Eegumsa Fayyaa',
-      },
-      slug: 'workshop-food-safety-haccp',
-      type: 'event',
-      summary: {
-        en: 'Three-day certified training for restaurant head chefs and kitchen supervisors in Bishoftu.',
-      },
-      body: {
-        en: 'Practical kitchen hygiene, microbiological hazard controls, and global HACCP certification preparation.',
-      },
-      eventStartAt: '2026-12-05T08:30:00Z',
-      eventEndAt: '2026-12-07T16:00:00Z',
-      registrationOpen: true,
-    },
-    {
-      title: {
-        en: 'OHPEA Signs Strategic MoU with Sinke Bank for Member Credit Facility',
-        om: 'Waliigaltee OHPEA fi Baankii Siinqee Gidduutti Mallatteeffame',
-      },
-      slug: 'mou-sinke-bank-credit-facility',
-      type: 'news',
-      summary: {
-        en: 'Association members gain preferential business loan rates and digital micro-finance backing for hospitality startups.',
-      },
-      body: {
-        en: 'A historic partnership was established today providing accessible financing for eco-lodges and youth hospitality ventures.',
-      },
-    },
-    {
-      title: {
-        en: 'Vacancy: Senior Research & Policy Analyst',
-        om: 'Baniinsa Hojii: Qorataa Olaanaa Imaammata Turizimii',
-      },
-      slug: 'vacancy-senior-research-analyst',
-      type: 'vacancy',
-      summary: {
-        en: 'Opportunity for senior economists or tourism sociologists to spearhead OHPEA\'s policy think-tank.',
-      },
-      body: {
-        en: 'Master’s degree in Tourism, Economics, or Development Studies required. Excellent writing skills in Afaan Oromo and English.',
-      },
-      deadline: '2026-11-28',
-    },
-    {
-      title: {
-        en: 'Upcoming B2B Trade Delegation to Dubai Tourism Expo 2027',
-        om: 'Imala Daldalaa Expoo Turizimii Dubaay 2027',
-      },
-      slug: 'b2b-trade-delegation-dubai-2027',
-      type: 'news',
-      summary: {
-        en: 'OHPEA will sponsor 20 licensed Oromia tour operators to showcase regional destinations at the international expo.',
-      },
-      body: {
-        en: 'Registration details and selection criteria will be published in upcoming association newsletters.',
-      },
-    },
-  ];
-
-  for (const a of announcements) {
-    await pool.query(
-      `INSERT INTO announcements (
-        id, slug, type, title, summary, body, deadline, event_start_at, event_end_at,
-        registration_open, registration_url, status, published_at, created_by, is_demo, created_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'published',NOW(),'SuperAdmin',true,NOW())`,
-      [
-        crypto.randomUUID(),
-        a.slug,
-        a.type,
-        JSON.stringify(a.title),
-        JSON.stringify(a.summary),
-        JSON.stringify(a.body),
-        a.deadline || null,
-        a.eventStartAt || null,
-        a.eventEndAt || null,
-        a.registrationOpen || false,
-        a.registrationUrl || null,
-      ]
-    );
-  }
-
-  console.log('[Database Seed] Demo data seeded successfully.');
-}
-
-/**
- * Remove Demo Data helper (npm run seed:clear-demo)
- */
-export async function clearDemoData(): Promise<{
-  membersDeleted: number;
-  paymentsDeleted: number;
-  announcementsDeleted: number;
-  activitiesDeleted: number;
-}> {
-  const pool = await getPool();
-  const client = await pool.connect();
-
-  try {
-    await client.query('BEGIN');
-    const paymentsRes = await client.query('DELETE FROM payments WHERE is_demo = true');
-    const membersRes = await client.query('DELETE FROM members WHERE is_demo = true');
-    const announcementsRes = await client.query('DELETE FROM announcements WHERE is_demo = true');
-    const activitiesRes = await client.query('DELETE FROM activities WHERE is_demo = true');
-    await client.query('COMMIT');
-
-    return {
-      paymentsDeleted: paymentsRes.rowCount || 0,
-      membersDeleted: membersRes.rowCount || 0,
-      announcementsDeleted: announcementsRes.rowCount || 0,
-      activitiesDeleted: activitiesRes.rowCount || 0,
-    };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
 }
 
 /**
  * High-level Database Operations object (dbOperations)
  */
+/** One-way hash of an ID number (peppered). Single source for every code path. */
+export function hashIdNumber(idType: string, idNumber: string): string {
+  const pepper = process.env.SERVER_PEPPER || 'ophea_pepper_2026';
+  return crypto.createHash('sha256').update(`${idType}:${String(idNumber).trim()}:${pepper}`).digest('hex');
+}
+
 export const dbOperations = {
   // Members
   async getMembers(params: {
@@ -1357,6 +960,15 @@ export const dbOperations = {
     if (params.graduationLevelId) {
       conditions.push(`m.graduation_level_id = $${idx}`);
       values.push(params.graduationLevelId);
+      idx++;
+    }
+    if (params.paid !== undefined) {
+      const now = new Date();
+      const firstOfMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      conditions.push(
+        `${params.paid ? '' : 'NOT '}EXISTS (SELECT 1 FROM payments p WHERE p.member_id = m.id AND p.status = 'paid' AND p.period_end >= $${idx})`
+      );
+      values.push(firstOfMonth);
       idx++;
     }
     if (params.createdFrom) {
@@ -1444,8 +1056,7 @@ export const dbOperations = {
   },
 
   async checkDuplicateMember(phone: string, email: string, idType: string, idNumber: string) {
-    const pepper = process.env.SERVER_PEPPER || 'ohpea_pepper_2026';
-    const idHash = crypto.createHash('sha256').update(`${idType}:${idNumber.trim()}:${pepper}`).digest('hex');
+    const idHash = hashIdNumber(idType, idNumber);
 
     const res = await query(
       `SELECT id, member_no, full_name, phone, email FROM members 
@@ -1460,10 +1071,10 @@ export const dbOperations = {
     const currentYear = new Date().getFullYear();
     const res = await query(
       "SELECT count(*) as count FROM members WHERE member_no LIKE $1",
-      [`OHPEA-${currentYear}-%`]
+      [`OPHEA-${currentYear}-%`]
     );
     const nextSeq = parseInt(res.rows[0].count, 10) + 1;
-    return `OHPEA-${currentYear}-${String(nextSeq).padStart(5, '0')}`;
+    return `OPHEA-${currentYear}-${String(nextSeq).padStart(5, '0')}`;
   },
 
   async getNextReceiptNumber(): Promise<string> {
@@ -1477,64 +1088,68 @@ export const dbOperations = {
   },
 
   async createMember(data: any) {
-  const res = await query(
-    `INSERT INTO members (
-      id, member_no, full_name, phone, email, gender, date_of_birth,
-      graduation_level_id, occupation_type, sector_id, field_of_study_id,
-      professional_category, organization_name, job_title, region_id, town,
-      id_type, id_number_hash, id_number_last4, registration_status, membership_status,
-      preferred_language, source, consent_at, created_at, updated_at,
-      membership_category, nationality,
-      emergency_contact_name, emergency_contact_phone,
-      business_tin, year_established, institution_name,
-      skills, expertise_areas, interests,
-      zone_sub_city, woreda
-    ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-      $17, $18, $19, $20, $21, $22, $23, NOW(), NOW(), NOW(),
-      $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35
-    ) RETURNING *`,
-    [
-      data.id || crypto.randomUUID(),
-      data.memberNo,
-      data.fullName,
-      data.phone,
-      data.email.toLowerCase(),
-      data.gender,
-      data.dateOfBirth || null,
-      data.graduationLevelId || null,
-      data.occupationType || null,
-      data.sectorId || null,
-      data.fieldOfStudyId || null,
-      data.professionalCategory || null,
-      data.organizationName || null,
-      data.jobTitle || null,
-      data.regionId || null,
-      data.town || null,
-      data.idType || 'fayda',
-      data.idNumberHash || '',
-      data.idNumberLast4 || '',
-      data.registrationStatus || 'pending',
-      data.membershipStatus || 'pending',
-      data.preferredLanguage || 'en',
-      data.source || 'online',
-      // New fields:
-      data.membershipCategory || null,
-      data.nationality || null,
-      data.emergencyContactName || null,
-      data.emergencyContactPhone || null,
-      data.businessTin || null,
-      data.yearEstablished ?? null,
-      data.institutionName || null,
-      data.skills || null,
-      Array.isArray(data.expertiseAreas) ? JSON.stringify(data.expertiseAreas) : null,
-      Array.isArray(data.interests) ? JSON.stringify(data.interests) : null,
-      data.zoneSubCity || null,
-      data.woreda || null,
-    ]
-  );
-  return mapRow(res.rows[0]);
-},
+    const res = await query(
+      `INSERT INTO members (
+        id, member_no, full_name, phone, email, gender, date_of_birth,
+        membership_category, nationality, business_tin, skills, expertise_areas, interests,
+        emergency_contact_name, emergency_contact_phone,
+        employment_status, year_established, zone_sub_city, woreda, institution_name,
+        graduation_level_id, occupation_type, sector_id, field_of_study_id,
+        professional_category, organization_name, job_title, region_id, town,
+        id_type, id_number_hash, id_number_last4, registration_status, membership_status,
+        preferred_language, source, phone_verified_at, consent_at, created_at, updated_at
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,
+        $8,$9,$10,$11,$12,$13,
+        $14,$15,
+        $16,$17,$18,$19,$20,
+        $21,$22,$23,$24,
+        $25,$26,$27,$28,$29,
+        $30,$31,$32,$33,$34,
+        $35,$36,$37, NOW(), NOW(), NOW()
+      ) RETURNING *`,
+      [
+        data.id || crypto.randomUUID(),
+        data.memberNo,
+        data.fullName,
+        data.phone,
+        String(data.email).toLowerCase(),
+        data.gender || 'unspecified',
+        data.dateOfBirth || null,
+        data.membershipCategory || null,
+        data.nationality || null,
+        data.businessTin || null,
+        data.skills || null,
+        data.expertiseAreas || [],
+        data.interests || [],
+        data.emergencyContactName || null,
+        data.emergencyContactPhone || null,
+        data.employmentStatus || null,
+        data.yearEstablished ?? null,
+        data.zoneSubCity || null,
+        data.woreda || null,
+        data.institutionName || null,
+        data.graduationLevelId || null,
+        data.occupationType || null,
+        data.sectorId || null,
+        data.fieldOfStudyId || null,
+        data.professionalCategory || null,
+        data.organizationName || null,
+        data.jobTitle || null,
+        data.regionId,
+        data.town || null,
+        data.idType,
+        data.idNumberHash,
+        data.idNumberLast4,
+        data.registrationStatus || 'pending',
+        data.membershipStatus || 'pending',
+        data.preferredLanguage || 'en',
+        data.source || 'online',
+        data.phoneVerifiedAt || null,
+      ]
+    );
+    return mapRow(res.rows[0]);
+  },
 
   async updateMemberStatus(id: string, membershipStatus: string) {
     const res = await query(
@@ -1633,6 +1248,10 @@ export const dbOperations = {
     regionId?: string;
     status?: string;
     period?: string;
+    method?: string;
+    q?: string;
+    from?: string;
+    to?: string;
     page?: number;
     pageSize?: number;
   }) {
@@ -1643,37 +1262,35 @@ export const dbOperations = {
     const conditions: string[] = [];
     const values: any[] = [];
     let idx = 1;
+    const add = (sql: string, v: any) => {
+      conditions.push(sql.replace('?', `$${idx}`));
+      values.push(v);
+      idx++;
+    };
 
-    if (params.memberId) {
-      conditions.push(`p.member_id = $${idx}`);
-      values.push(params.memberId);
-      idx++;
-    }
-    if (params.regionId) {
-      conditions.push(`p.region_id = $${idx}`);
-      values.push(params.regionId);
-      idx++;
-    }
-    if (params.status) {
-      conditions.push(`p.status = $${idx}`);
-      values.push(params.status);
-      idx++;
-    }
-    if (params.period) {
-      conditions.push(`p.period = $${idx}`);
-      values.push(params.period);
+    if (params.memberId) add('p.member_id = ?', params.memberId);
+    if (params.regionId) add('p.region_id = ?', params.regionId);
+    if (params.status) add('p.status = ?', params.status);
+    if (params.period) add('p.period = ?', params.period);
+    if (params.method) add('p.method = ?', params.method);
+    if (params.from) add('p.paid_at >= ?', params.from);
+    if (params.to) add('p.paid_at < ?', `${params.to} 23:59:59.999`);
+    if (params.q) {
+      const like = `%${params.q.trim()}%`;
+      conditions.push(`(p.receipt_no ILIKE $${idx} OR m.full_name ILIKE $${idx} OR m.member_no ILIKE $${idx})`);
+      values.push(like);
       idx++;
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const from = 'FROM payments p LEFT JOIN members m ON p.member_id = m.id LEFT JOIN regions r ON p.region_id = r.id';
 
-    const countRes = await query(`SELECT count(*) as total FROM payments p ${whereClause}`, values);
-    const total = parseInt(countRes.rows[0].total, 10);
+    const countRes = await query(`SELECT count(*) as total ${from} ${whereClause}`, values);
+    const total = parseInt(countRes.rows[0].total, 10) || 0;
 
     const listRes = await query(
-      `SELECT p.*, m.full_name as member_name, m.member_no, m.phone as member_phone
-       FROM payments p
-       LEFT JOIN members m ON p.member_id = m.id
+      `SELECT p.*, m.full_name as member_name, m.member_no, m.phone as member_phone, r.name as region_name
+       ${from}
        ${whereClause}
        ORDER BY p.paid_at DESC
        LIMIT $${idx} OFFSET $${idx + 1}`,
@@ -1705,8 +1322,8 @@ export const dbOperations = {
 
   async voidPayment(id: string, note?: string) {
     const res = await query(
-      `UPDATE payments SET status = 'void', note = COALESCE(note || ' | Voided', 'Voided') WHERE id = $1 RETURNING *`,
-      [id]
+      `UPDATE payments SET status = 'void', void_reason = $2, voided_at = NOW() WHERE id = $1 RETURNING *`,
+      [id, note || null]
     );
     return res.rows[0] ? mapRow(res.rows[0]) : null;
   },

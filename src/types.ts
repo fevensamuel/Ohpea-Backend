@@ -1,5 +1,5 @@
 /**
- * OHPEA API Shared TypeScript Types and Interfaces
+ * OPHEA API Shared TypeScript Types and Interfaces
  */
 
 export type SupportedLanguage = 'en' | 'om' | 'am' | 'ar' | 'fr';

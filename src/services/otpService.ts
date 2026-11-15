@@ -83,7 +83,7 @@ export class OtpService {
 
     // If phone is provided and SMS feature is enabled, dispatch SMS
     if (phone && process.env.FEATURE_SMS === 'true') {
-      await afroSmsService.sendSms(phone, `OHPEA: Your verification code is ${code}. Valid for ${OTP_TTL_MINUTES} min.`);
+      await afroSmsService.sendSms(phone, `OPHEA: Your verification code is ${code}. Valid for ${OTP_TTL_MINUTES} min.`);
     }
 
     return { success: true };

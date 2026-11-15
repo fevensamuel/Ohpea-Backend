@@ -7,6 +7,7 @@ import swaggerUi from 'swagger-ui-express';
 
 import { initDatabase, testConnection, query } from './src/backend/database.js';
 import { apiRouter } from './src/backend/routes.js';
+import { publicRouter } from './src/routes/public.js';
 import { healthRouter } from './src/routes/health.js';
 import { contractRouter } from './src/routes/contract.js';
 import { openApiSpec } from './src/backend/swagger.js';
@@ -20,7 +21,7 @@ if (!jwtSecret || jwtSecret.length < 32) {
   process.exit(1);
 }
 
-// Parse port: CLI arg (--port 3000) > PORT env var > 3000
+// Parse port from CLI args (--port 3000) or default to 3000
 const args = process.argv.slice(2);
 let cliPort: number | null = null;
 for (let i = 0; i < args.length; i++) {
@@ -83,7 +84,7 @@ app.use(
 app.get('/', (_req: Request, res: Response) => {
   return res.json({
     success: true,
-    name: 'OHPEA API',
+    name: 'OPHEA API',
     version: '1.0.0',
   });
 });
@@ -123,7 +124,7 @@ app.use(
   '/api-docs',
   swaggerUi.serve,
   swaggerUi.setup(openApiSpec, {
-    customSiteTitle: 'OHPEA REST API Documentation & Explorer',
+    customSiteTitle: 'OPHEA REST API Documentation & Explorer',
     customCss: '.swagger-ui .topbar { background-color: #166534; }',
     swaggerOptions: {
       defaultModelExpandDepth: 3,
@@ -142,7 +143,10 @@ app.use(
 app.use('/api', healthRouter);
 app.use('/api', contractRouter);
 
-// Mount API router — contains ALL routes: auth, public, admin members, admin content, admin system
+// Mount Public router (unauthenticated, rate-limited)
+app.use('/api/public', publicRouter);
+
+// Mount API router (admin and auth)
 app.use('/api', apiRouter);
 
 // Start SMS background scheduler
@@ -154,7 +158,7 @@ if (process.env.FEATURE_SMS === 'true') {
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
-    error: `Endpoint '${req.originalUrl}' not found on OHPEA API`,
+    error: `Endpoint '${req.originalUrl}' not found on OPHEA API`,
   });
 });
 
@@ -174,7 +178,7 @@ async function startServer() {
 
     const serverInstance = app.listen(PORT, '0.0.0.0', () => {
       console.log(`================================================================`);
-      console.log(`  OHPEA Headless Backend API running on http://0.0.0.0:${PORT}`);
+      console.log(`  OPHEA Headless Backend API running on http://0.0.0.0:${PORT}`);
       console.log(`  Swagger UI:    http://localhost:${PORT}/api-docs`);
       console.log(`  OpenAPI JSON:  http://localhost:${PORT}/api-docs/openapi.json`);
       console.log(`  Health Check:  http://localhost:${PORT}/health`);

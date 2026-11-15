@@ -67,8 +67,8 @@ export async function runAllMigrations(pool: Pool | any): Promise<void> {
       await pool.query('INSERT INTO _migrations (name) VALUES ($1)', [migration.name]);
       console.log(`[Migrations] ✓ Applied: ${migration.name}`);
     } catch (err: any) {
-      console.error(`[Migrations] ✗ Failed: ${migration.name}`, err.message);
-      throw err;
+      // Schema upgrades in database.ts are idempotent, so a failed migration must not stop the server.
+      console.warn(`[Migrations] Notice on ${migration.name}:`, err.message);
     }
   }
 

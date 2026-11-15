@@ -9,10 +9,10 @@ import { Member, Payment } from '../types.js';
 export class ExportService {
   public async exportMembersToExcel(members: Member[]): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = 'OHPEA System';
+    workbook.creator = 'OPHEA System';
     workbook.created = new Date();
 
-    const sheet = workbook.addWorksheet('OHPEA Members');
+    const sheet = workbook.addWorksheet('OPHEA Members');
     sheet.columns = [
       { header: 'Member No', key: 'memberNo', width: 18 },
       { header: 'Full Name', key: 'fullName', width: 28 },
@@ -53,7 +53,7 @@ export class ExportService {
 
   public async exportPaymentsToExcel(payments: (Payment & { memberName?: string; memberNo?: string })[]): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = 'OHPEA Finance';
+    workbook.creator = 'OPHEA Finance';
     workbook.created = new Date();
 
     const sheet = workbook.addWorksheet('Contributions');
@@ -109,7 +109,7 @@ export class ExportService {
       doc.on('error', reject);
 
       // Header
-      doc.fontSize(16).text('Oromia Hospitality & Tourism Professionals Association (OHPEA)', { align: 'center' });
+      doc.fontSize(16).text('Oromia Hospitality & Tourism Professionals Association (OPHEA)', { align: 'center' });
       doc.fontSize(12).text('Official Member Register', { align: 'center' });
       doc.moveDown();
       doc.fontSize(9).text(`Generated: ${new Date().toISOString()}`, { align: 'right' });
@@ -153,7 +153,7 @@ export class ExportService {
 
       // Header
       doc.fontSize(14).fillColor('#166534').text('OROMIA HOSPITALITY & TOURISM PROFESSIONALS ASSOCIATION', 40, 40, { align: 'center' });
-      doc.fontSize(10).fillColor('#444444').text('Waldaa Ogeeyyii Hojii Simannaa fi Daawwanna Turizimii Oromiyaa (OHPEA)', { align: 'center' });
+      doc.fontSize(10).fillColor('#444444').text('Waldaa Ogeeyyii Keessummeessuu fi Tuuriizimii Oromiyaa (OPHEA)', { align: 'center' });
       doc.fontSize(12).fillColor('#000000').text('OFFICIAL CONTRIBUTION RECEIPT', { align: 'center', underline: true });
       doc.moveDown();
 
@@ -178,9 +178,9 @@ export class ExportService {
 
       // Signatures
       doc.fontSize(9).fillColor('#444444');
-      doc.text('Issued by OHPEA Finance Administration', 50, 310);
+      doc.text('Issued by OPHEA Finance Administration', 50, 310);
       doc.text('Authorized Signature & Seal: ___________________', 320, 310);
-      doc.fontSize(8).text('This is an official computer-generated receipt from the OHPEA Management System.', 50, 350, { align: 'center' });
+      doc.fontSize(8).text('This is an official computer-generated receipt from the OPHEA Management System.', 50, 350, { align: 'center' });
 
       doc.end();
     });

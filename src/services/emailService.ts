@@ -12,7 +12,7 @@ export class EmailService {
   private enabled: boolean;
 
   constructor() {
-    this.from = process.env.SMTP_FROM || 'OHPEA <no-reply@ohpea.org>';
+    this.from = process.env.SMTP_FROM || 'OPHEA <no-reply@ophea.org>';
     const host = process.env.SMTP_HOST;
     const user = process.env.SMTP_USER;
     const pass = process.env.SMTP_PASS;

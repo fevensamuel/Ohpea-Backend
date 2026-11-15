@@ -1,4 +1,4 @@
-# OHPEA REST API Changelog & Endpoint Matrix by Phase
+# OPHEA REST API Changelog & Endpoint Matrix by Phase
 
 This document indexes all backend endpoints, data contracts, and feature-gate switches for front-end integration.
 

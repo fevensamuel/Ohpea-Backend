@@ -1,5 +1,5 @@
 {
-  "name": "ohpea-api",
+  "name": "ophea-api",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -8,8 +8,6 @@
     "build": "esbuild server.ts --bundle --platform=node --format=cjs --packages=external --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "lint": "tsc --noEmit",
-    "seed:demo": "tsx scripts/seedDemo.ts",
-    "seed:clear-demo": "tsx scripts/clearDemo.ts",
     "smoke": "tsx scripts/smokeTest.ts",
     "test": "tsx scripts/testPublicApi.ts"
   },

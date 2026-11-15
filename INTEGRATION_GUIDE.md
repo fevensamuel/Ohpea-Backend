@@ -1,16 +1,16 @@
-# OHPEA Headless Backend — Frontend Integration Guide
+# OPHEA Headless Backend — Frontend Integration Guide
 
-This guide provides everything needed to connect the **Public Website** and the **Admin Portal** to the **OHPEA Headless REST API**.
+This guide provides everything needed to connect the **Public Website** and the **Admin Portal** to the **OPHEA Headless REST API**.
 
 ---
 
 ## 1. Architecture & Connection Overview
 
-The OHPEA backend is a **strictly headless REST API** (no UI, no HTML rendering). It exposes standardized JSON endpoints at `/api/*` and interactive Swagger documentation at `/api-docs`.
+The OPHEA backend is a **strictly headless REST API** (no UI, no HTML rendering). It exposes standardized JSON endpoints at `/api/*` and interactive Swagger documentation at `/api-docs`.
 
 ```
                     ┌───────────────────────────────┐
-                    │     OHPEA Headless Backend    │
+                    │     OPHEA Headless Backend    │
                     │   (Port 3000 / Production URL) │
                     └───────▲───────────────▲───────┘
                             │               │
@@ -42,29 +42,29 @@ NEXT_PUBLIC_API_URL=http://localhost:3000/api
 
 ### CORS Configuration
 The backend allows origins listed in `ALLOWED_ORIGINS` (comma-separated). In development, all `localhost` origins are permitted by default.
-In `ohpea-api/.env`:
+In `ophea-api/.env`:
 ```ini
-ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,https://ohpea.org,https://admin.ohpea.org
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,https://ophea.org,https://admin.ophea.org
 ```
 
 ---
 
-## 2. Universal API Client SDK (`ohpea-api-client.ts`)
+## 2. Universal API Client SDK (`ophea-api-client.ts`)
 
-A ready-to-use TypeScript API SDK is included in this repository at `ohpea-api-client.ts`. You can copy this file directly into both your **Public Website** and **Admin Portal** projects (`src/lib/api.ts` or `src/services/api.ts`).
+A ready-to-use TypeScript API SDK is included in this repository at `ophea-api-client.ts`. You can copy this file directly into both your **Public Website** and **Admin Portal** projects (`src/lib/api.ts` or `src/services/api.ts`).
 
 ### Installing in your frontend:
 ```bash
-# Copy ohpea-api-client.ts to your frontend project:
-cp /path/to/ohpea-api/ohpea-api-client.ts src/lib/api.ts
+# Copy ophea-api-client.ts to your frontend project:
+cp /path/to/ophea-api/ophea-api-client.ts src/lib/api.ts
 ```
 
 ### Quick Usage Example (React / Vue / Svelte / Plain JS):
 ```typescript
-import { OhpeaApiClient } from './lib/api';
+import { OpheaApiClient } from './lib/api';
 
 // Initialize with environment API URL
-export const api = new OhpeaApiClient(import.meta.env.VITE_API_URL || 'http://localhost:3000/api');
+export const api = new OpheaApiClient(import.meta.env.VITE_API_URL || 'http://localhost:3000/api');
 ```
 
 ---
@@ -104,7 +104,7 @@ const api = axios.create({
 
 // Request Interceptor: Attach JWT Bearer Token
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('ohpea_jwt_token');
+  const token = localStorage.getItem('ophea_jwt_token');
   if (token && config.headers) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -116,7 +116,7 @@ api.interceptors.response.use(
   (response) => response.data,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('ohpea_jwt_token');
+      localStorage.removeItem('ophea_jwt_token');
       if (window.location.pathname.startsWith('/admin')) {
         window.location.href = '/admin/login';
       }
@@ -174,7 +174,7 @@ const payload = {
 };
 
 const res = await api.registerMember(payload);
-// Response: { success: true, data: { memberNo: "OHPEA-2026-00151", status: "pending" } }
+// Response: { success: true, data: { memberNo: "OPHEA-2026-00151", status: "pending" } }
 ```
 
 #### Multipart/Form-Data Mode (With Document Uploads):
@@ -210,7 +210,7 @@ If the phone, email, or Fayda ID is already registered, the backend returns:
 ```json
 {
   "success": false,
-  "error": "A registration with these credentials already exists. Please contact OHPEA support."
+  "error": "A registration with these credentials already exists. Please contact OPHEA support."
 }
 ```
 
@@ -301,7 +301,7 @@ The returned `user` object determines UI permissions and regional scoping:
 {
   "id": "uuid",
   "username": "admin",
-  "email": "admin@ohpea.org",
+  "email": "admin@ophea.org",
   "fullName": "Super Administrator",
   "role": "SuperAdmin",       // "SuperAdmin" | "RegionalAdmin" | "Finance" | "Editor"
   "permissions": ["*"],       // String array of granular permissions
@@ -418,13 +418,13 @@ const unpaidList = await api.getUnpaidMembers('monthly', '2026-11-01');
 // 1. Send Single SMS
 await api.sendSms({
   memberId: "uuid",
-  message: "Dear Member, your OHPEA membership renewal receipt RCT-2026-00042 is ready."
+  message: "Dear Member, your OPHEA membership renewal receipt RCT-2026-00042 is ready."
 });
 
 // 2. Launch Broadcast Campaign with Audience Filter & Dynamic Variables
 await api.createSmsCampaign({
   name: "General Assembly Notification",
-  message: "Baga gammadde {{fullName}}, OHPEA General Assembly will take place on Dec 5 in Adama.",
+  message: "Baga gammadde {{fullName}}, OPHEA General Assembly will take place on Dec 5 in Adama.",
   audienceFilter: {
     regionId: "reg-adama-city",
     membershipStatus: "active"

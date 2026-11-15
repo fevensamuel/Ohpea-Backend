@@ -10,7 +10,7 @@ export class AfroSmsService {
   constructor() {
     this.token = process.env.AFROMESSAGE_TOKEN || '';
     this.identifierId = process.env.AFROMESSAGE_IDENTIFIER_ID || '';
-    this.senderName = process.env.AFROMESSAGE_SENDER_NAME || 'OHPEA';
+    this.senderName = process.env.AFROMESSAGE_SENDER_NAME || 'OPHEA';
     this.enabled = process.env.FEATURE_SMS === 'true' && Boolean(this.token);
 
     if (this.token) {
