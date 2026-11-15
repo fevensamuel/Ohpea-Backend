@@ -66,7 +66,6 @@ const loginRateLimiter = customRateLimiter({
   keyGenerator: (req) => `login:${req.ip || '127.0.0.1'}`,
 });
 
-// POST /auth/login & alias /admin/login
 const handleLogin = async (req: Request, res: Response) => {
   const { usernameOrEmail, password } = req.body;
   const admin = await dbOperations.getAdminByUsernameOrEmail(usernameOrEmail);
@@ -141,15 +140,10 @@ const handleLogin = async (req: Request, res: Response) => {
 apiRouter.post('/auth/login', loginRateLimiter, validateBody(loginSchema), handleLogin);
 apiRouter.post('/admin/login', loginRateLimiter, validateBody(loginSchema), handleLogin);
 
-// GET /auth/me
 apiRouter.get('/auth/me', authenticateJWT, loadAdminContext, (req: Request, res: Response) => {
-  return res.json({
-    success: true,
-    data: req.admin,
-  });
+  return res.json({ success: true, data: req.admin });
 });
 
-// POST /auth/change-password
 const changePasswordSchema = z.object({
   currentPassword: z.string().min(6),
   newPassword: z.string().min(8, 'New password must be at least 8 characters long'),
@@ -184,7 +178,6 @@ apiRouter.post(
   }
 );
 
-// POST /auth/logout
 apiRouter.post('/auth/logout', authenticateJWT, async (req: Request, res: Response) => {
   if (req.user) {
     await dbOperations.createAuditLog({
@@ -212,49 +205,44 @@ apiRouter.get('/public/site-settings', async (req: Request, res: Response) => {
   return res.json({ success: true, data: settings });
 });
 
-// GET /public/lookups/regions
-apiRouter.get('/public/lookups/regions', async (req: Request, res: Response) => {
+// GET /public/stats
+apiRouter.get('/public/stats', async (req: Request, res: Response) => {
   try {
-    const result = await query(
-      'SELECT * FROM regions WHERE is_active = true ORDER BY sort_order ASC'
+    const membersResult = await query(
+      `SELECT COUNT(*)::int AS total FROM members WHERE membership_status = 'active'`
     );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
+    const totalMembers = membersResult.rows[0]?.total ?? 0;
 
-// GET /public/lookups/fields
-apiRouter.get('/public/lookups/fields', async (req: Request, res: Response) => {
-  try {
-    const result = await query(
-      'SELECT * FROM lookup_fields_of_study WHERE is_active = true ORDER BY sort_order ASC'
+    const settingsResult = await query(
+      `SELECT key, value FROM site_settings WHERE key IN
+        ('stats.accreditedHotels', 'stats.certifiedGuides', 'stats.trainingGraduates')`
     );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
+    const settingsMap = Object.fromEntries(
+      settingsResult.rows.map((r: any) => {
+        let val = r.value;
+        if (typeof val === 'string') {
+          try { val = JSON.parse(val); } catch { /* keep raw */ }
+        }
+        return [r.key, val];
+      })
+    );
 
-// GET /public/lookups/graduation-levels
-apiRouter.get('/public/lookups/graduation-levels', async (req: Request, res: Response) => {
-  try {
-    const result = await query(
-      'SELECT * FROM lookup_graduation_levels WHERE is_active = true ORDER BY sort_order ASC'
-    );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
-  } catch (err: any) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-});
+    const toInt = (v: unknown, fallback = 0): number => {
+      if (v === null || v === undefined) return fallback;
+      const n = Number(v);
+      return Number.isFinite(n) ? Math.trunc(n) : fallback;
+    };
 
-// GET /public/lookups/sectors
-apiRouter.get('/public/lookups/sectors', async (req: Request, res: Response) => {
-  try {
-    const result = await query(
-      'SELECT * FROM lookup_sectors WHERE is_active = true ORDER BY sort_order ASC'
-    );
-    return res.json({ success: true, data: result.rows.map(mapRow) });
+    const data = {
+      totalMembers: toInt(totalMembers, 0),
+      accreditedHotels: toInt(settingsMap['stats.accreditedHotels'], 0),
+      certifiedGuides: toInt(settingsMap['stats.certifiedGuides'], 0),
+      trainingGraduates: toInt(settingsMap['stats.trainingGraduates'], 0),
+    };
+
+    res.setHeader('X-Contract-Version', '1');
+    res.setHeader('Cache-Control', 'public, max-age=60');
+    return res.json({ success: true, data });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -372,6 +360,54 @@ apiRouter.get('/public/announcements/:slug', async (req: Request, res: Response)
     return res.status(404).json({ success: false, error: 'Announcement not found' });
   }
   return res.json({ success: true, data: mapRow(result.rows[0]) });
+});
+
+// GET /public/lookups/regions
+apiRouter.get('/public/lookups/regions', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT * FROM regions WHERE is_active = true ORDER BY sort_order ASC'
+    );
+    return res.json({ success: true, data: result.rows.map(mapRow) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /public/lookups/fields
+apiRouter.get('/public/lookups/fields', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT * FROM lookup_fields_of_study WHERE is_active = true ORDER BY sort_order ASC'
+    );
+    return res.json({ success: true, data: result.rows.map(mapRow) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /public/lookups/graduation-levels
+apiRouter.get('/public/lookups/graduation-levels', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT * FROM lookup_graduation_levels WHERE is_active = true ORDER BY sort_order ASC'
+    );
+    return res.json({ success: true, data: result.rows.map(mapRow) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /public/lookups/sectors
+apiRouter.get('/public/lookups/sectors', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      'SELECT * FROM lookup_sectors WHERE is_active = true ORDER BY sort_order ASC'
+    );
+    return res.json({ success: true, data: result.rows.map(mapRow) });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // GET /public/lookups
@@ -581,7 +617,7 @@ apiRouter.post(
           });
         }
 
-                // CV / Company Profile
+        // CV / Company Profile
         if (files.cvCompanyProfile?.[0]) {
           const file = files.cvCompanyProfile[0];
           const storedName = `cv-${Date.now()}-${path.basename(file.path)}`;
@@ -617,7 +653,6 @@ apiRouter.post(
             });
           }
         }
-
 
         if (files.credentials) {
           for (const file of files.credentials) {
@@ -849,6 +884,28 @@ apiRouter.get(
         payments: payments.rows.map(mapRow),
       },
     });
+  }
+);
+
+// GET /admin/members/:id/payments
+apiRouter.get(
+  '/admin/members/:id/payments',
+  adminAuthChain,
+  requirePermission('members'),
+  requireRegionScope,
+  async (req: Request, res: Response) => {
+    const member = await dbOperations.getMemberById(req.params.id);
+    if (!member) return res.status(404).json({ success: false, error: 'Member not found' });
+
+    if (req.admin?.role === 'RegionalAdmin' && member.regionId !== req.admin.regionId) {
+      return res.status(403).json({ success: false, error: 'Forbidden' });
+    }
+
+    const result = await query(
+      'SELECT * FROM payments WHERE member_id = $1 ORDER BY paid_at DESC',
+      [req.params.id]
+    );
+    return res.json({ success: true, data: result.rows.map(mapRow) });
   }
 );
 
@@ -1885,7 +1942,6 @@ apiRouter.get('/admin/meta/permissions', adminAuthChain, (req: Request, res: Res
     { key: 'lookups', label: 'Manage System Lookups' },
     { key: 'settings.site', label: 'Manage Site Settings' },
     { key: 'audit', label: 'View Audit Logs' },
-    // Phase 4
     { key: 'jobs', label: 'Manage Job Board' },
     { key: 'b2b', label: 'Manage B2B Directory' },
     { key: 'investments', label: 'Manage Investment Opportunities' },
