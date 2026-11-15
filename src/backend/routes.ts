@@ -581,6 +581,44 @@ apiRouter.post(
           });
         }
 
+                // CV / Company Profile
+        if (files.cvCompanyProfile?.[0]) {
+          const file = files.cvCompanyProfile[0];
+          const storedName = `cv-${Date.now()}-${path.basename(file.path)}`;
+          const targetPath = path.join(memberDir, storedName);
+          fs.renameSync(file.path, targetPath);
+          const hash = calculateFileHash(targetPath);
+          await dbOperations.addMemberDocument({
+            memberId,
+            kind: 'credential',
+            originalName: file.originalname,
+            storedName,
+            mime: file.mimetype,
+            size: file.size,
+            sha256: hash,
+          });
+        }
+
+        // Academic Certificates (multiple)
+        if (files.academicCertificates) {
+          for (const file of files.academicCertificates) {
+            const storedName = `cert-${Date.now()}-${path.basename(file.path)}`;
+            const targetPath = path.join(memberDir, storedName);
+            fs.renameSync(file.path, targetPath);
+            const hash = calculateFileHash(targetPath);
+            await dbOperations.addMemberDocument({
+              memberId,
+              kind: 'credential',
+              originalName: file.originalname,
+              storedName,
+              mime: file.mimetype,
+              size: file.size,
+              sha256: hash,
+            });
+          }
+        }
+
+
         if (files.credentials) {
           for (const file of files.credentials) {
             const storedName = `cred-${Date.now()}-${path.basename(file.path)}`;
@@ -627,11 +665,15 @@ apiRouter.post(
 
 // POST /public/contact
 const contactSchema = z.object({
-  name: z.string().min(2),
+  name: z.string().min(2).optional(),
+  fullName: z.string().min(2).optional(),
   email: z.string().email(),
   phone: z.string().optional(),
   subject: z.string().min(3),
   message: z.string().min(10),
+}).refine((data) => Boolean(data.name || data.fullName), {
+  message: 'Either name or fullName is required',
+  path: ['name'],
 });
 
 apiRouter.post(
@@ -639,11 +681,11 @@ apiRouter.post(
   customRateLimiter({ windowMs: 3600 * 1000, max: 5 }),
   validateBody(contactSchema),
   async (req: Request, res: Response) => {
-    const { name, email, phone, subject, message } = req.body;
+    const { name, fullName, email, phone, subject, message } = req.body;
     await query(
       `INSERT INTO contact_messages (id, name, email, phone, subject, message, status, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, 'new', NOW())`,
-      [crypto.randomUUID(), name, email, phone || null, subject, message]
+      [crypto.randomUUID(), fullName || name, email, phone || null, subject, message]
     );
     return res.json({ success: true, message: 'Message sent successfully. We will be in touch shortly.' });
   }
