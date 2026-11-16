@@ -330,7 +330,7 @@ publicRouter.post('/registrations/otp/send', otpRouteLimiter, async (req: Reques
       return fail(res, result.error || 'Failed to send OTP', 400);
     }
     const responseData: any = { message: 'OTP sent' };
-    if (process.env.NODE_ENV !== 'production' && (result as any).code) {
+    if ((process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') && (result as any).code) {
       responseData.code = (result as any).code;
     }
     return success(res, responseData);

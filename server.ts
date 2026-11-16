@@ -49,7 +49,8 @@ app.use(
       if (/^https?:\/\/localhost(:\d+)?$/.test(origin) || /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) {
         return callback(null, true);
       }
-      return callback(null, true); // Dev tolerance
+      if (process.env.NODE_ENV !== 'production') return callback(null, true);
+      return callback(new Error(`Origin ${origin} not allowed by CORS`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -187,7 +188,8 @@ async function startServer() {
 
     serverInstance.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
-        console.warn(`[Server] Notice: Port ${PORT} occupied by existing process. Re-using current instance.`);
+        console.error(`[Server] Port ${PORT} is already in use. Stop the other process or set PORT.`);
+        process.exit(1);
       } else {
         console.error('[Server] Unexpected listen error:', err);
       }

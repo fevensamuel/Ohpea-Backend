@@ -9,7 +9,8 @@ export function buildPublicProgram(row: any) {
     title: row.title,
     summary: row.summary,
     body: row.body,
-    iconUrl: row.icon_url || row.icon || '',
+    icon: row.icon || '',
+    iconUrl: row.icon_url || '',
     orderIndex: Number(row.order_index ?? row.sort_order ?? 0),
   };
 }
@@ -23,6 +24,14 @@ export function buildPublicAnnouncement(row: any) {
     summary: row.summary,
     body: row.body,
     coverImage: row.cover_image_url || row.cover_image || null,
+    coverImageUrl: row.cover_image_url || row.cover_image || null,
+    location: row.location || null,
+    organizationName: row.organization_name || null,
+    attachmentUrl: row.attachment_url || null,
+    externalLink: row.external_link || null,
+    eventEndAt: row.event_end_at || null,
+    registrationOpen: Boolean(row.registration_open),
+    registrationUrl: row.registration_url || null,
     eventStartAt: row.event_start_at || null,
     deadline: row.deadline || null,
     publishedAt: row.published_at || null,
@@ -57,7 +66,10 @@ export function buildPublicActivity(row: any) {
     id: row.id,
     title: row.title,
     summary: row.summary || row.description || null,
+    description: row.description || row.summary || null,
     date: row.activity_date || row.date || null,
+    activityDate: row.activity_date || row.date || null,
+    location: row.location || null,
     photos,
   };
 }

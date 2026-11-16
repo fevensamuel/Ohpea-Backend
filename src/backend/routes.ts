@@ -6,6 +6,7 @@
 import { adminContentRouter } from './adminContentRoutes.js';
 import { toAdminUserDto, getLang, loadPaymentInfo, toMemberSummaryDto, toMemberDetailDto, normalizeMemberBody, toPaymentDto, toRecentActivityDto } from './adminDto.js';
 import express, { Request, Response } from 'express';
+import { createAsyncRouter } from './asyncRouter.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
@@ -35,7 +36,7 @@ import { translations, t } from '../translations.js';
 import { memberRegistrationUpload, calculateFileHash, PRIVATE_UPLOAD_PATH } from '../config/multer.js';
 import { SupportedLanguage } from '../types.js';
 
-export const apiRouter = express.Router();
+export const apiRouter = createAsyncRouter();
 
 // Helper to normalize phone numbers to +2519... or +2517...
 function normalizeEthiopianPhone(phone: string): string {
@@ -401,6 +402,11 @@ apiRouter.put('/admin/members/:id', adminAuthChain, requirePermission('members.e
     emergency_contact_name: b.emergencyContactName,
     emergency_contact_phone: b.emergencyContactPhone,
     business_tin: b.businessTin,
+    employment_status: b.employmentStatus,
+    year_established: b.yearEstablished,
+    zone_sub_city: b.zoneSubCity,
+    woreda: b.woreda,
+    institution_name: b.institutionName,
     skills: b.skills,
     expertise_areas: b.expertiseAreas,
     interests: b.interests,

@@ -295,6 +295,16 @@ export function normalizeMemberBody(b: any) {
     emergencyContactName: str(pickFirst('emergencyContactName')),
     emergencyContactPhone: str(pickFirst('emergencyContactPhone')),
     businessTin: str(pickFirst('businessTin')),
+    employmentStatus: str(pickFirst('employmentStatus')),
+    yearEstablished: (() => {
+      const v = pickFirst('yearEstablished');
+      if (v === undefined) return undefined;
+      const n = Number(v);
+      return Number.isInteger(n) && n >= 1900 && n <= new Date().getFullYear() ? n : undefined;
+    })(),
+    zoneSubCity: str(pickFirst('zoneSubCity', 'subCityZone')),
+    woreda: str(pickFirst('woreda')),
+    institutionName: str(pickFirst('institutionName')),
     skills: b.skills === undefined ? undefined : (Array.isArray(b.skills) ? b.skills.map(String).join(', ') : str(b.skills) ?? ''),
     expertiseAreas: b.expertiseAreas === undefined ? undefined : (Array.isArray(b.expertiseAreas) ? b.expertiseAreas.map(String) : []),
     interests: b.interests === undefined ? undefined : (Array.isArray(b.interests) ? b.interests.map(String) : []),

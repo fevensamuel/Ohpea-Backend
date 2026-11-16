@@ -64,7 +64,7 @@ export async function sendRegistrationOtp(
 
   return {
     success: true,
-    code: process.env.NODE_ENV === 'production' ? undefined : code,
+    code: process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test' ? code : undefined,
   };
 }
 

@@ -5,6 +5,7 @@
  */
 
 import express, { Request, Response } from 'express';
+import { createAsyncRouter } from './asyncRouter.js';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { z } from 'zod';
@@ -45,7 +46,7 @@ import {
   toAuditLogDto,
 } from './adminDto.js';
 
-export const adminContentRouter = express.Router();
+export const adminContentRouter = createAsyncRouter();
 
 const auth = [authenticateJWT, loadAdminContext];
 
