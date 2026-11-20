@@ -31,6 +31,7 @@ export class RegistrationValidationError extends Error {
 export interface UploadedDoc {
   file: Express.Multer.File;
   kind: 'id' | 'credential' | 'cv';
+  category?: string;
 }
 
 const text = (v: unknown): string => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v).trim());
@@ -66,7 +67,8 @@ export function isPhoneOtpRequired(): boolean {
 /** Synchronous field validation. Returns field -> message. */
 export function validateRegistrationInput(
   body: RegistrationInput,
-  idDocumentFile?: Express.Multer.File
+  idDocumentFile?: Express.Multer.File,
+  extraDocs: UploadedDoc[] = []
 ): { isValid: boolean; fields: Record<string, string> } {
   const fields: Record<string, string> = {};
 
@@ -106,6 +108,10 @@ export function validateRegistrationInput(
 
   if (!idDocumentFile) fields.idDocument = 'ID document file is required (PDF, JPG or PNG, max 5MB)';
   else if (!ALLOWED_MIMES.includes(idDocumentFile.mimetype)) fields.idDocument = 'Only PDF, JPG and PNG files are accepted';
+  if (!extraDocs.some((doc) => doc.category === 'cvCompanyProfile')) fields.cvCompanyProfile = 'CV or company profile is required';
+  for (const doc of extraDocs) {
+    if (!ALLOWED_MIMES.includes(doc.file.mimetype)) fields[doc.category || 'documents'] = 'Only PDF, JPG and PNG files are accepted';
+  }
 
   return { isValid: Object.keys(fields).length === 0, fields };
 }
@@ -184,7 +190,7 @@ export async function processRegistrationFilesAndSave(
 
   const memberId = crypto.randomUUID();
   const memberDir = path.join(PRIVATE_UPLOAD_PATH, 'members', memberId);
-  const docs: UploadedDoc[] = [{ file: idDocumentFile, kind: 'id' }, ...extraDocs];
+  const docs: UploadedDoc[] = [{ file: idDocumentFile, kind: 'id', category: 'idDocument' }, ...extraDocs];
 
   const pool = await getPool();
   const client = await pool.connect();
@@ -212,10 +218,10 @@ export async function processRegistrationFilesAndSave(
         graduation_level_id, occupation_type, sector_id, field_of_study_id,
         professional_category, organization_name, job_title, region_id, town,
         id_type, id_number_hash, id_number_last4, registration_status, membership_status,
-        preferred_language, source, phone_verified_at, consent_at, created_at, updated_at
+        preferred_language, source, phone_verified_at, consent_at, created_at, updated_at, registration_details
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'pending','pending',$33,'online',$34,NOW(),NOW(),NOW()
+        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'pending','pending',$33,'online',$34,NOW(),NOW(),NOW(),$35
       )`,
       [
         memberId,
@@ -250,8 +256,32 @@ export async function processRegistrationFilesAndSave(
         idType,
         hashIdNumber(idType, idNumber),
         idNumber.slice(-4),
-        ['en', 'om', 'am'].includes(text(body.preferredLanguage)) ? text(body.preferredLanguage) : 'en',
+        ['en', 'om', 'am', 'ar', 'fr'].includes(text(body.preferredLanguage)) ? text(body.preferredLanguage) : 'en',
         isPhoneOtpRequired() ? new Date().toISOString() : null,
+        JSON.stringify({
+          submittedFields: body,
+          ...(body.officialFormData && typeof body.officialFormData === 'object' ? body.officialFormData : {}),
+          // Keep fields not represented by first-class member columns available to the admin.
+          secondaryPhone: text(body.secondaryPhone) || null,
+          emergencyRelationship: text(body.emergencyRelationship) || null,
+          alternateEmergencyPhone: text(body.alternateEmergencyPhone) || null,
+          workplaceLocation: text(body.workplaceLocation) || null,
+          yearsInCurrentRole: text(body.yearsInCurrentRole) || null,
+          yearEstablishedEmployees: text(body.yearEstablishedEmployees) || null,
+          education: body.education ?? null,
+          certifications: body.certifications ?? null,
+          experience: body.experience ?? null,
+          language: body.language ?? null,
+          technicalSkills: text(body.technicalSkills) || null,
+          totalExperienceYears: text(body.totalExperienceYears) || null,
+          paymentMethod: body.paymentMethod ?? null,
+          bankPlatformUsed: text(body.bankPlatformUsed) || null,
+          transactionReference: text(body.transactionReference) || null,
+          amountPaid: text(body.amountPaid) || null,
+          declarationDate: text(body.declarationDate) || null,
+          applicantFullName: text(body.applicantFullName) || null,
+          applicantSignature: text(body.applicantSignature) || null,
+        }),
       ]
     );
 
@@ -262,9 +292,9 @@ export async function processRegistrationFilesAndSave(
       fs.renameSync(doc.file.path, dest);
       const sha256 = crypto.createHash('sha256').update(fs.readFileSync(dest)).digest('hex');
       await client.query(
-        `INSERT INTO member_documents (id, member_id, kind, original_name, stored_name, mime, size, sha256, uploaded_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())`,
-        [crypto.randomUUID(), memberId, doc.kind, doc.file.originalname, storedName, doc.file.mimetype, doc.file.size, sha256]
+        `INSERT INTO member_documents (id, member_id, kind, document_category, original_name, stored_name, mime, size, sha256, uploaded_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())`,
+        [crypto.randomUUID(), memberId, doc.kind, doc.category || doc.kind, doc.file.originalname, storedName, doc.file.mimetype, doc.file.size, sha256]
       );
     }
 

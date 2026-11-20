@@ -16,6 +16,7 @@ import * as m13 from '../../migrations/20261111000013_add_description_to_contrib
 import * as m14 from '../../migrations/20261112000014_add_full_registration_fields.js';
 import * as m15 from '../../migrations/20261113000015_add_demo_flags.js';
 import * as m16 from '../../migrations/20261114000016_add_missing_registration_fields.js';
+import * as m17 from '../../migrations/20261115000017_add_official_registration_details.js';
 
 export const allMigrations = [
   { name: '20261107000001_add_slug_to_programs', up: m1.up, down: m1.down },
@@ -34,6 +35,7 @@ export const allMigrations = [
   { name: '20261112000014_add_full_registration_fields', up: m14.up, down: m14.down },
   { name: '20261113000015_add_demo_flags', up: m15.up, down: m15.down },
   { name: '20261114000016_add_missing_registration_fields', up: m16.up, down: m16.down },
+  { name: '20261115000017_add_official_registration_details', up: m17.up, down: m17.down },
 ];
 
 /**

@@ -49,12 +49,27 @@ if (!fs.existsSync(tmpDir)) {
 // Dedicated Multer for Public Registration
 const registrationUpload = multer({
   dest: tmpDir,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB per file
+  limits: { fileSize: 5 * 1024 * 1024, files: 32, fields: 250 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowed = ['.pdf', '.jpg', '.jpeg', '.png', '.webp'];
+    const mimeAllowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    if (!allowed.includes(ext) || !mimeAllowed.includes(file.mimetype)) {
+      return cb(new Error('Invalid file type. Upload PDF, JPG, PNG or WEBP files only.'));
+    }
+    cb(null, true);
+  },
 }).fields([
+  // Official OHPEA form document slots
+  { name: 'passportPhoto', maxCount: 1 },
   { name: 'idDocument', maxCount: 1 },
-  { name: 'credentialDocs', maxCount: 10 },
   { name: 'cvCompanyProfile', maxCount: 1 },
   { name: 'academicCertificates', maxCount: 10 },
+  { name: 'professionalLicensesBusinessRegistration', maxCount: 10 },
+  { name: 'paymentProof', maxCount: 1 },
+  // Backward-compatible field names used by earlier public clients
+  { name: 'credentialDocs', maxCount: 10 },
+  { name: 'credentials', maxCount: 5 },
 ]);
 
 // Rate Limiters: 100 req/min global, 5 req/min on OTP routes (with test headroom in dev)
@@ -271,6 +286,12 @@ publicRouter.get('/lookups/:type', async (req: Request, res: Response) => {
 publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunction) => {
   registrationUpload(req, res, async (uploadErr: any) => {
     if (uploadErr) {
+      const partialFiles = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+      for (const list of Object.values(partialFiles || {})) {
+        for (const file of list) {
+          if (file?.path && fs.existsSync(file.path)) fs.rmSync(file.path, { force: true });
+        }
+      }
       return fail(res, uploadErr.message || 'File upload error', 400);
     }
 
@@ -278,9 +299,13 @@ publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunc
       const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
       const idDocFile = files?.['idDocument']?.[0];
       const extraDocs: UploadedDoc[] = [
-        ...(files?.['credentialDocs'] || []).map((file) => ({ file, kind: 'credential' as const })),
-        ...(files?.['academicCertificates'] || []).map((file) => ({ file, kind: 'credential' as const })),
-        ...(files?.['cvCompanyProfile'] || []).map((file) => ({ file, kind: 'cv' as const })),
+        ...(files?.['passportPhoto'] || []).map((file) => ({ file, kind: 'credential' as const, category: 'passportPhoto' })),
+        ...(files?.['credentialDocs'] || []).map((file) => ({ file, kind: 'credential' as const, category: 'credential' })),
+        ...(files?.['credentials'] || []).map((file) => ({ file, kind: 'credential' as const, category: 'credential' })),
+        ...(files?.['academicCertificates'] || []).map((file) => ({ file, kind: 'credential' as const, category: 'academicCertificate' })),
+        ...(files?.['professionalLicensesBusinessRegistration'] || []).map((file) => ({ file, kind: 'credential' as const, category: 'professionalLicenseOrBusinessRegistration' })),
+        ...(files?.['paymentProof'] || []).map((file) => ({ file, kind: 'credential' as const, category: 'paymentProof' })),
+        ...(files?.['cvCompanyProfile'] || []).map((file) => ({ file, kind: 'cv' as const, category: 'cvCompanyProfile' })),
       ];
       const discardUploads = () => {
         for (const list of Object.values(files || {})) for (const f of list) fs.rmSync(f.path, { force: true });
@@ -291,12 +316,25 @@ publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunc
         req.body.gender = req.body.gender.toLowerCase();
       }
 
-      const validation = validateRegistrationInput(req.body, idDocFile);
+      const validation = validateRegistrationInput(req.body, idDocFile, extraDocs);
       if (!validation.isValid) {
         discardUploads();
         return fail(res, 'Validation failed', 400, validation.fields);
       }
 
+      // The browser FormData representation flattens nested names such as education[0].;
+      // the explicit JSON payload preserves the complete official form without losing arrays.
+      if (typeof req.body.officialFormData === 'string') {
+        try {
+          const parsed = JSON.parse(req.body.officialFormData);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            req.body.officialFormData = parsed;
+          }
+        } catch {
+          discardUploads();
+          return fail(res, 'officialFormData must contain valid JSON', 400);
+        }
+      }
       const member = await processRegistrationFilesAndSave(req.body, idDocFile!, extraDocs);
 
       return res.status(201).json({
@@ -310,6 +348,14 @@ publicRouter.post('/registrations', (req: Request, res: Response, next: NextFunc
         },
       });
     } catch (err: any) {
+      // Multer writes temporary files before validation/database work. Always remove
+      // any file that has not already been moved into the member's private directory.
+      const uploaded = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+      for (const list of Object.values(uploaded || {})) {
+        for (const file of list) {
+          if (file?.path && fs.existsSync(file.path)) fs.rmSync(file.path, { force: true });
+        }
+      }
       if (err instanceof DuplicateRegistrationError) {
         return fail(res, err.message, 409);
       }

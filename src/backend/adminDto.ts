@@ -213,6 +213,7 @@ export function toMemberDocumentDto(doc: any, memberId: string) {
     id: doc.id,
     name: doc.originalName,
     type: doc.kind,
+    category: doc.documentCategory || doc.document_category || doc.kind,
     size: Number(doc.size) || 0,
     uploadedAt: iso(doc.uploadedAt) || '',
     url: `/admin/members/${memberId}/documents/${doc.id}`,
@@ -255,6 +256,7 @@ export function toMemberDetailDto(row: any, docs: any[], lang: Lang, info?: Paym
     zoneSubCity: row.zoneSubCity || undefined,
     woreda: row.woreda || undefined,
     institutionName: row.institutionName || undefined,
+    registrationDetails: row.registrationDetails && typeof row.registrationDetails === 'object' ? row.registrationDetails : {},
   };
 }
 
