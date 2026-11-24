@@ -8,7 +8,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { getPool, query, hashIdNumber, dbOperations } from '../../backend/database.js';
 import { PRIVATE_UPLOAD_PATH } from '../../config/multer.js';
-import { normalizeEthiopianPhone, ETHIOPIAN_MOBILE } from '../../utils/phone.js';
+import { normalizePhoneForNationality, ETHIOPIAN_MOBILE, INTERNATIONAL_E164 } from '../../utils/phone.js';
 
 export type RegistrationInput = Record<string, any>;
 
@@ -75,8 +75,17 @@ export function validateRegistrationInput(
   const fullName = text(body.fullName);
   if (fullName.length < 2 || fullName.length > 120) fields.fullName = 'Full name is required (2-120 characters)';
 
-  const phone = normalizeEthiopianPhone(text(body.phone));
-  if (!ETHIOPIAN_MOBILE.test(phone)) fields.phone = 'Enter a valid Ethiopian mobile number (+2519... or +2517...)';
+  const isEthiopian = /ethiop/i.test(text(body.nationality));
+  const phone = normalizePhoneForNationality(text(body.phone), text(body.nationality));
+  if (isEthiopian ? !ETHIOPIAN_MOBILE.test(phone) : !INTERNATIONAL_E164.test(phone)) fields.phone = isEthiopian ? 'Enter a valid Ethiopian mobile number (+251 followed by 9 digits starting 7 or 9)' : 'Enter a valid international phone number in +country-code format';
+  for (const key of ['secondaryPhone', 'emergencyContactPhone', 'alternateEmergencyPhone']) {
+    const value = text(body[key]);
+    if (!value) continue;
+    const normalized = normalizePhoneForNationality(value, text(body.nationality));
+    if (isEthiopian ? !/^\+251[79]\d{8}$/.test(normalized) : !INTERNATIONAL_E164.test(normalized)) fields[key] = isEthiopian ? 'Use +251 followed by exactly 9 digits.' : 'Enter a valid international phone number in +country-code format';
+    else body[key] = normalized;
+  }
+  body.phone = phone;
 
   const email = text(body.email);
   if (!email) fields.email = 'Email is required';
@@ -158,9 +167,10 @@ async function assertPhoneVerified(phone: string): Promise<void> {
 export async function processRegistrationFilesAndSave(
   body: RegistrationInput,
   idDocumentFile: Express.Multer.File,
-  extraDocs: UploadedDoc[] = []
+  extraDocs: UploadedDoc[] = [],
+  options: { source?: string; requireOtp?: boolean; registrationStatus?: string; membershipStatus?: string; phoneVerified?: boolean } = {}
 ): Promise<{ memberId: string; memberNo: string }> {
-  const phone = normalizeEthiopianPhone(text(body.phone));
+  const phone = normalizePhoneForNationality(text(body.phone), text(body.nationality));
   const email = text(body.email).toLowerCase();
   const idType = first(body, 'idType').toLowerCase() || 'fayda';
   const idNumber = first(body, 'idNumber', 'nationalId');
@@ -186,7 +196,8 @@ export async function processRegistrationFilesAndSave(
   const occupationType = ['private', 'government', 'other'].includes(occ) ? occ : null;
 
   if (Object.keys(errors).length) throw new RegistrationValidationError(errors);
-  if (isPhoneOtpRequired()) await assertPhoneVerified(phone);
+  const requireOtp = options.requireOtp ?? isPhoneOtpRequired();
+  if (requireOtp) await assertPhoneVerified(phone);
 
   const memberId = crypto.randomUUID();
   const memberDir = path.join(PRIVATE_UPLOAD_PATH, 'members', memberId);
@@ -221,7 +232,7 @@ export async function processRegistrationFilesAndSave(
         preferred_language, source, phone_verified_at, consent_at, created_at, updated_at, registration_details
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'pending','pending',$33,'online',$34,NOW(),NOW(),NOW(),$35
+        $21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,NOW(),NOW(),NOW(),$38
       )`,
       [
         memberId,
@@ -256,8 +267,11 @@ export async function processRegistrationFilesAndSave(
         idType,
         hashIdNumber(idType, idNumber),
         idNumber.slice(-4),
+        options.registrationStatus || 'pending',
+        options.membershipStatus || 'pending',
         ['en', 'om', 'am', 'ar', 'fr'].includes(text(body.preferredLanguage)) ? text(body.preferredLanguage) : 'en',
-        isPhoneOtpRequired() ? new Date().toISOString() : null,
+        options.source || 'online',
+        (options.phoneVerified || requireOtp) ? new Date().toISOString() : null,
         JSON.stringify({
           submittedFields: body,
           ...(body.officialFormData && typeof body.officialFormData === 'object' ? body.officialFormData : {}),
@@ -265,6 +279,7 @@ export async function processRegistrationFilesAndSave(
           secondaryPhone: text(body.secondaryPhone) || null,
           emergencyRelationship: text(body.emergencyRelationship) || null,
           alternateEmergencyPhone: text(body.alternateEmergencyPhone) || null,
+          phone,
           workplaceLocation: text(body.workplaceLocation) || null,
           yearsInCurrentRole: text(body.yearsInCurrentRole) || null,
           yearEstablishedEmployees: text(body.yearEstablishedEmployees) || null,

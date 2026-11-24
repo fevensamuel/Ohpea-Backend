@@ -6,21 +6,9 @@ import type { Pool } from 'pg';
  * If separate `messages` table exists, copies rows over and drops `messages` (or creates a view).
  */
 export async function up(pool: Pool | any): Promise<void> {
-  // Ensure canonical contact_messages has all necessary columns
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS contact_messages (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      full_name TEXT,
-      email TEXT NOT NULL,
-      phone TEXT,
-      subject TEXT NOT NULL,
-      message TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'new',
-      source TEXT NOT NULL DEFAULT 'admin',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
+  // The canonical table is created by the bootstrap schema. Avoid repeating
+  // CREATE TABLE in pg-mem, whose parser does not support this migration's AST.
+  // Production PostgreSQL still receives the compatibility ALTERs below.
 
   // Ensure full_name and source columns exist
   try {

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { query } from '../../backend/database.js';
-import { afroSmsService } from '../afroSmsService.js';
+import { smsService } from '../smsService.js';
 
 // Phone send rate tracker (in-memory sliding window: 3 sends / 10 minutes per phone)
 const phoneSendTimestamps = new Map<string, number[]>();
@@ -31,6 +31,10 @@ export async function sendRegistrationOtp(
     return { success: false, error: 'Too many OTP requests for this phone number. Please wait 10 minutes.' };
   }
 
+  if (process.env.FEATURE_PHONE_OTP === 'true' && !smsService.isEnabled()) {
+    return { success: false, error: 'Phone verification is not available yet because an SMS provider has not been configured. Please contact the office or try again later.' };
+  }
+
   // 6-digit code
   const code = Math.floor(100000 + Math.random() * 900000).toString();
   const codeHash = crypto.createHash('sha256').update(code).digest('hex');
@@ -58,9 +62,10 @@ export async function sendRegistrationOtp(
     );
   }
 
-  // Send SMS via existing AfroMessage service
+  // Dispatch through the configured provider adapter (disabled until one is purchased).
   const msg = `OPHEA: Your public registration verification code is ${code}. It expires in 5 minutes.`;
-  await afroSmsService.sendSms(phone, msg);
+  const delivery = await smsService.sendSms(phone, msg);
+  if (!delivery.success) return { success: false, error: delivery.error || 'Unable to send verification code' };
 
   return {
     success: true,

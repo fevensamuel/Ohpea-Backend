@@ -15,6 +15,7 @@ import {
   loadAdminContext,
   requireSuperAdmin,
   requirePermission,
+  requirePasswordChanged,
   validateBody,
 } from './middleware.js';
 import { query, mapRow, dbOperations } from './database.js';
@@ -48,7 +49,7 @@ import {
 
 export const adminContentRouter = createAsyncRouter();
 
-const auth = [authenticateJWT, loadAdminContext];
+const auth = [authenticateJWT, loadAdminContext, requirePasswordChanged];
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -455,7 +456,7 @@ export const SETTING_DEFAULTS: Record<string, any> = {
     workingHours: '',
     mapCoordinates: '',
   },
-  socials: { facebook: '', telegram: '', linkedin: '', twitter: '', youtube: '' },
+  socials: [],
   stats: { accreditedHotels: 0, certifiedGuides: 0, trainingGraduates: 0 },
 };
 
@@ -469,8 +470,13 @@ function cleanSetting(key: string, value: any): any {
       return flatStrings(Object.keys(SETTING_DEFAULTS.branding), v, SETTING_DEFAULTS.branding);
     case 'contact':
       return flatStrings(Object.keys(SETTING_DEFAULTS.contact), v, SETTING_DEFAULTS.contact);
-    case 'socials':
-      return flatStrings(Object.keys(SETTING_DEFAULTS.socials), v, SETTING_DEFAULTS.socials);
+    case 'socials': {
+      const list = Array.isArray(v) ? v : Object.entries(v).map(([platform, url]) => ({ platform, url, enabled: true }));
+      const allowed = new Set(['facebook','instagram','x','twitter','whatsapp','telegram','youtube','tiktok','linkedin','threads','pinterest','snapchat','discord','reddit','github','vimeo','wechat','website']);
+      return list.filter((item: any) => item && allowed.has(String(item.platform || '').toLowerCase()) && /^https?:\/\//i.test(String(item.url || '').trim()))
+        .map((item: any, index: number) => ({ id: String(item.id || crypto.randomUUID()), platform: String(item.platform).toLowerCase(), label: String(item.label || item.platform).trim().slice(0,60), url: String(item.url).trim(), enabled: item.enabled !== false, sortOrder: Number.isFinite(Number(item.sortOrder)) ? Number(item.sortOrder) : index }))
+        .sort((a: any,b: any) => a.sortOrder - b.sortOrder);
+    }
     case 'stats':
       return {
         accreditedHotels: Math.max(0, Math.trunc(num(v.accreditedHotels, 0))),
@@ -485,6 +491,7 @@ function cleanSetting(key: string, value: any): any {
 export async function readSetting(key: string): Promise<any> {
   const res = await query('SELECT value FROM site_settings WHERE key = $1', [key]);
   const stored = res.rows[0] ? parseJson<any>(res.rows[0].value, {}) : {};
+  if (key === 'socials' && Array.isArray(stored)) return cleanSetting(key, stored);
   return cleanSetting(key, { ...SETTING_DEFAULTS[key], ...(stored && typeof stored === 'object' ? stored : {}) });
 }
 
@@ -727,6 +734,16 @@ export const PERMISSION_OPTIONS = [
   { key: 'lookups', label: 'View System Lookups' },
   { key: 'settings.site', label: 'Manage Site Settings' },
   { key: 'audit', label: 'View Audit Logs' },
+  { key: 'settings.contact', label: 'Manage Contact Settings' },
+  { key: 'translations', label: 'Manage Translations' },
+  { key: 'admin.users', label: 'Manage Admin Users' },
+  { key: 'audit.logs', label: 'View Audit Logs (legacy key)' },
+  { key: 'jobs', label: 'Manage Job Board' },
+  { key: 'b2b', label: 'Manage B2B Marketplace' },
+  { key: 'investments', label: 'Manage Investments' },
+  { key: 'resources', label: 'Manage Resources' },
+  { key: 'international', label: 'Manage International Relations' },
+  { key: 'region-resources', label: 'Manage Regional Resources' },
 ];
 
 const VALID_PERMISSION_KEYS = PERMISSION_OPTIONS.map((p) => p.key);
@@ -752,9 +769,10 @@ adminContentRouter.get('/admin/users', auth, requireSuperAdmin, async (req: Requ
 const createUserSchema = z.object({
   username: z.string().min(3),
   email: z.string().email(),
+  phone: z.string().trim().min(7, 'Enter a valid phone number').max(24),
   password: z.string().min(8, 'Password must be at least 8 characters'),
   fullName: z.string().min(2),
-  role: z.enum(['SuperAdmin', 'RegionalAdmin', 'Finance', 'Editor']),
+  role: z.string().trim().min(2).max(50).regex(/^[A-Za-z][A-Za-z0-9 _-]*$/),
   permissions: z.array(z.string()).optional(),
   regionId: z.string().optional().nullable(),
 });
@@ -763,16 +781,16 @@ adminContentRouter.post('/admin/users', auth, requireSuperAdmin, validateBody(cr
   const b = req.body;
   if (b.role === 'RegionalAdmin' && !b.regionId) return fail(res, 400, 'regionId is required for RegionalAdmin role', { regionId: 'Required for RegionalAdmin' });
 
-  const dup = await query('SELECT id FROM admin_users WHERE LOWER(username) = $1 OR LOWER(email) = $2', [b.username.toLowerCase(), b.email.toLowerCase()]);
+  const dup = await query('SELECT id FROM admin_users WHERE LOWER(username) = $1 OR LOWER(email) = $2', [b.username.trim().toLowerCase(), b.email.trim().toLowerCase()]);
   if (dup.rows.length > 0) return fail(res, 409, 'A user with this username or email already exists');
 
   const permissions = (b.permissions || []).filter((p: string) => VALID_PERMISSION_KEYS.includes(p));
   const id = crypto.randomUUID();
-  const hash = await bcrypt.hash(b.password, 10);
+  const hash = await bcrypt.hash(b.password, 12);
   await query(
-    `INSERT INTO admin_users (id, username, email, password_hash, full_name, role, permissions, region_id, is_active, must_change_password)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,true)`,
-    [id, b.username.toLowerCase(), b.email.toLowerCase(), hash, b.fullName, b.role, permissions, b.role === 'RegionalAdmin' ? b.regionId : b.regionId || null]
+    `INSERT INTO admin_users (id, username, email, phone, password_hash, full_name, role, permissions, region_id, is_active, must_change_password)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,true)`,
+    [id, b.username.trim().toLowerCase(), b.email.trim().toLowerCase(), b.phone.trim(), hash, b.fullName.trim(), b.role, permissions, b.role === 'RegionalAdmin' ? b.regionId : b.regionId || null]
   );
   await audit(req, 'admin.create', 'admin_users', id, { username: b.username, email: b.email, role: b.role });
   const row = await query(`${USER_SELECT} WHERE u.id = $1`, [id]);
@@ -785,19 +803,25 @@ adminContentRouter.put('/admin/users/:id', auth, requireSuperAdmin, async (req: 
   if (cur.rows.length === 0) return fail(res, 404, 'User not found');
 
   const role = b.role ?? cur.rows[0].role;
-  if (!['SuperAdmin', 'RegionalAdmin', 'Finance', 'Editor'].includes(role)) return fail(res, 400, 'Invalid role', { role: 'Invalid role' });
+  if (typeof role !== 'string' || !/^[A-Za-z][A-Za-z0-9 _-]{1,49}$/.test(role)) return fail(res, 400, 'Invalid role', { role: 'Enter a valid role name' });
   const regionId = b.regionId !== undefined ? str(b.regionId) ?? null : cur.rows[0].region_id;
   if (role === 'RegionalAdmin' && !regionId) return fail(res, 400, 'regionId is required for RegionalAdmin role', { regionId: 'Required for RegionalAdmin' });
   if (req.params.id === req.admin!.id && role !== 'SuperAdmin') return fail(res, 400, 'You cannot remove your own SuperAdmin role');
 
   if (b.email !== undefined) {
-    const dup = await query('SELECT id FROM admin_users WHERE LOWER(email) = $1 AND id <> $2', [String(b.email).toLowerCase(), req.params.id]);
+    const dup = await query('SELECT id FROM admin_users WHERE LOWER(email) = $1 AND id <> $2', [String(b.email).trim().toLowerCase(), req.params.id]);
     if (dup.rows.length > 0) return fail(res, 409, 'Another user already uses this email', { email: 'Email already in use' });
+  }
+  if (b.username !== undefined) {
+    const dup = await query('SELECT id FROM admin_users WHERE LOWER(username) = $1 AND id <> $2', [String(b.username).trim().toLowerCase(), req.params.id]);
+    if (dup.rows.length > 0) return fail(res, 409, 'Another user already uses this username', { username: 'Username already in use' });
   }
 
   await updateById('admin_users', req.params.id, {
     full_name: b.fullName !== undefined ? str(b.fullName) : undefined,
-    email: b.email !== undefined ? String(b.email).toLowerCase() : undefined,
+    username: b.username !== undefined ? String(b.username).trim().toLowerCase() : undefined,
+    email: b.email !== undefined ? String(b.email).trim().toLowerCase() : undefined,
+    phone: b.phone !== undefined ? String(b.phone).trim() : undefined,
     role,
     permissions: Array.isArray(b.permissions) ? b.permissions.filter((p: string) => VALID_PERMISSION_KEYS.includes(p)) : undefined,
     region_id: regionId,

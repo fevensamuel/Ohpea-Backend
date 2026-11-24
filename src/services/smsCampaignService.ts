@@ -2,7 +2,7 @@
  * SMS Campaign Service with Audience Targeting and Template Variable Replacement
  */
 
-import { afroSmsService } from './afroSmsService.js';
+import { smsService } from './smsService.js';
 import { dbOperations } from '../backend/database.js';
 
 interface CampaignInput {
@@ -36,9 +36,11 @@ export class SmsCampaignService {
       },
     });
 
-    // If not scheduled for future, trigger sending
-    if (!input.scheduledAt || new Date(input.scheduledAt) <= new Date()) {
+    // Keep campaigns safely staged until a real provider is configured.
+    if (smsService.isEnabled() && (!input.scheduledAt || new Date(input.scheduledAt) <= new Date())) {
       setTimeout(() => this.processCampaign(campaignId), 100);
+    } else if (!smsService.isEnabled()) {
+      await dbOperations.updateSmsCampaignStatus(campaignId, 'waiting_for_provider');
     }
 
     return { id: campaignId, targetCount: members.length };
@@ -46,7 +48,7 @@ export class SmsCampaignService {
 
   public async processCampaign(campaignId: string): Promise<void> {
     const campaign = await dbOperations.getSmsCampaignById(campaignId);
-    if (!campaign || campaign.status === 'sent' || campaign.status === 'sending') {
+    if (!campaign || campaign.status === 'sent' || campaign.status === 'sending' || !smsService.isEnabled()) {
       return;
     }
 
@@ -62,9 +64,9 @@ export class SmsCampaignService {
       let personalizedMessage = campaign.message
         .replace(/{{fullName}}/g, member.fullName || 'Member')
         .replace(/{{memberNo}}/g, member.memberNo || '')
-        .replace(/{{amountDue}}/g, '100 ETB');
+        .replace(/{{amountDue}}/g, '');
 
-      const result = await afroSmsService.sendSms(member.phone, personalizedMessage);
+      const result = await smsService.sendSms(member.phone, personalizedMessage);
       if (result.success) {
         sent += 1;
         await dbOperations.createSmsLog({
@@ -72,7 +74,7 @@ export class SmsCampaignService {
           memberId: member.id,
           phone: member.phone,
           message: personalizedMessage,
-          status: 'sent',
+          status: result.status,
           providerMessageId: result.messageId,
           sentAt: new Date().toISOString(),
         });
@@ -83,7 +85,7 @@ export class SmsCampaignService {
           memberId: member.id,
           phone: member.phone,
           message: personalizedMessage,
-          status: 'failed',
+          status: result.status,
           error: result.error,
           sentAt: new Date().toISOString(),
         });

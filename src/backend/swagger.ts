@@ -34,7 +34,7 @@ export const openApiSpec = {
     { name: 'Dashboard', description: 'Real-time statistical aggregations, demographics, and metrics' },
     { name: 'Payments', description: 'Contribution tracking, official receipts, and financial reporting' },
     { name: 'Content', description: 'CMS announcements, activities, objectives, programs, and settings' },
-    { name: 'SMS', description: 'AfroMessage SMS dispatches and targeted bulk campaigns' },
+    { name: 'SMS', description: 'Provider-independent SMS templates, campaigns, logs and provider readiness' },
     { name: 'Users', description: 'Administrative user accounts and RBAC permission assignments' },
     { name: 'Audit', description: 'Immutable system action logs' },
   ],
@@ -433,7 +433,7 @@ export const openApiSpec = {
     '/public/registrations/otp/send': {
       post: {
         tags: ['Public'],
-        summary: 'Dispatch 6-digit registration OTP to Ethiopian phone via AfroMessage',
+        summary: 'Request a 6-digit registration OTP (requires a configured SMS provider)',
         security: [],
         requestBody: {
           required: true,
@@ -910,7 +910,7 @@ export const openApiSpec = {
     '/admin/sms/send': {
       post: {
         tags: ['SMS'],
-        summary: 'Send single SMS to member or phone number',
+        summary: 'Request a single SMS (requires a configured provider; otherwise reports not_configured)',
         security: [{ BearerAuth: [] }],
         requestBody: {
           required: true,
@@ -944,7 +944,7 @@ export const openApiSpec = {
       },
       post: {
         tags: ['SMS'],
-        summary: 'Create and dispatch targeted bulk SMS campaign',
+        summary: 'Prepare a targeted bulk SMS campaign; dispatch waits until a provider is configured',
         security: [{ BearerAuth: [] }],
         requestBody: {
           required: true,
@@ -955,10 +955,26 @@ export const openApiSpec = {
         },
       },
     },
+    '/admin/sms/status': {
+      get: {
+        tags: ['SMS'],
+        summary: 'Check SMS provider readiness and feature state',
+        security: [{ BearerAuth: [] }],
+        responses: { '200': { description: 'Provider configuration status' } },
+      },
+    },
+    '/admin/sms/templates': {
+      get: {
+        tags: ['SMS'],
+        summary: 'List starter SMS templates',
+        security: [{ BearerAuth: [] }],
+        responses: { '200': { description: 'SMS templates' } },
+      },
+    },
     '/admin/sms/balance': {
       get: {
         tags: ['SMS'],
-        summary: 'Get AfroMessage balance',
+        summary: 'Get SMS provider configuration status',
         security: [{ BearerAuth: [] }],
         responses: {
           '200': { description: 'Balance details' },
@@ -994,10 +1010,11 @@ export const openApiSpec = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: ['username', 'email', 'password', 'fullName', 'role'],
+                required: ['username', 'email', 'phone', 'password', 'fullName', 'role'],
                 properties: {
                   username: { type: 'string' },
                   email: { type: 'string', format: 'email' },
+                  phone: { type: 'string', description: 'Administrator contact phone number' },
                   password: { type: 'string', minLength: 8 },
                   fullName: { type: 'string' },
                   role: { type: 'string', enum: ['SuperAdmin', 'RegionalAdmin', 'Finance', 'Editor'] },

@@ -16,7 +16,7 @@ The system replaces manual, unorganized records with a secure database serving t
 - **Validation:** `zod` schemas for body and query validation with field-level 400 errors.
 - **Documentation:** Interactive OpenAPI 3 Swagger UI at `/api-docs` and `/api-docs/openapi.json`.
 - **Integrations:**
-  - SMS: AfroMessage (`afromessage` package wrapper)
+  - SMS: provider-independent SMS module (provider not yet selected)
   - Email: `nodemailer` (SMTP for OTP and payment receipts)
   - Exports: `exceljs` (XLSX) and `pdfkit` (PDF member directories and official contribution receipts)
 
@@ -40,7 +40,7 @@ ophea-api/
     config/
       multer.ts                  # Public vs Private file upload storage (5MB limit, MIME checks)
     services/
-      afroSmsService.ts          # AfroMessage wrapper
+      smsService.ts              # Provider-independent SMS adapter boundary
       smsCampaignService.ts      # Bulk send, scheduling, templating ({{fullName}}, {{memberNo}}), logging
       emailService.ts            # nodemailer: OTP, receipts, notifications
       otpService.ts              # Cryptographic code generation, hashing, verification, throttling
@@ -68,19 +68,17 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:300
 UPLOAD_PATH=./uploads
 PRIVATE_UPLOAD_PATH=./private_uploads
 SEED_ADMIN_EMAIL=admin@ophea.org
-SEED_ADMIN_PASSWORD=Admin12345!ChangeMe
+SEED_ADMIN_PASSWORD=replace-with-a-unique-strong-password
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=no-reply@ophea.org
 SMTP_PASS=
 SMTP_FROM="OPHEA <no-reply@ophea.org>"
-AFROMESSAGE_TOKEN=
-AFROMESSAGE_IDENTIFIER_ID=
-AFROMESSAGE_SENDER_NAME=OPHEA
+SMS_PROVIDER=none
+FEATURE_SMS=false
 OTP_TTL_MINUTES=10
 OTP_MAX_ATTEMPTS=5
 FEATURE_EMAIL_OTP=false
-FEATURE_SMS=false
 FEATURE_MEMBER_PORTAL=false
 SEED_DEMO_DATA=true
 ```
@@ -181,3 +179,7 @@ curl -X POST http://localhost:3000/api/admin/payments \
     "reference": "TXN-998811"
   }'
 ```
+
+
+### SMS provider setup
+SMS campaigns, templates, status and delivery logs are available, but no provider is selected by default. Set up a purchased provider adapter before enabling FEATURE_SMS. Until then, outgoing SMS is disabled and the API reports that no provider is configured.

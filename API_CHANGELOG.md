@@ -76,10 +76,10 @@ Provides real financial operations, contribution plans, regional scoping, and ex
 | `POST` | `/api/public/registrations/otp/request` | Dispatch 6-digit OTP to email and phone (max 3/hr) |
 | `POST` | `/api/public/registrations/otp/verify` | Verify OTP and issue 15-minute `otpToken` |
 | `GET` | `/api/public/translations/:lang` | Server-side localized UI dictionaries (`en`, `om`, `am`, `ar`, `fr`) |
-| `POST` | `/api/admin/sms/send` | Single SMS dispatch via AfroMessage |
+| `POST` | `/api/admin/sms/send` | Single SMS dispatch via SMS provider |
 | `POST` | `/api/admin/sms/campaigns` | Create targeted bulk SMS campaigns with `{{fullName}}` and `{{memberNo}}` placeholders |
 | `GET` | `/api/admin/sms/campaigns` | List SMS campaigns with dispatch progress |
-| `GET` | `/api/admin/sms/balance` | Query AfroMessage credit balance |
+| `GET` | `/api/admin/sms/balance` | Query SMS provider credit balance |
 
 ---
 
@@ -97,3 +97,11 @@ Provides real financial operations, contribution plans, regional scoping, and ex
 | `CRUD` | `/api/resources` | Applied tourism research repository & publications |
 | `CRUD` | `/api/international` | MoUs and bilateral partner pacts |
 | `CRUD` | `/api/admin/region-resources` | Equipment and resources issued per region |
+
+## 2026-11-22 integration correction
+
+- Added `GET /api/admin/sms/campaigns?page=&pageSize=` for paginated campaign history.
+- Added `GET /api/admin/sms/logs?page=&pageSize=` for paginated delivery activity.
+- Both endpoints require an authenticated administrator with the `sms` permission.
+- Campaign responses include `recipientCount`, `sentCount`, and `failedCount`; log responses include `recipientPhone`, `recipientName`, `errorMessage`, and `sentAt` to match the admin SMS Center.
+- SMS remains disabled until a provider adapter is selected/configured and `FEATURE_SMS=true`; no provider is assumed.

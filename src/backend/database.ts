@@ -76,7 +76,9 @@ function createInMemoryPool() {
     },
   });
   const MemPool = mem.adapters.createPg().Pool;
-  return new MemPool();
+  const pool = new MemPool();
+  (pool as any).__isInMemoryFallback = true;
+  return pool;
 }
 
 export async function getPool() {
@@ -160,6 +162,7 @@ export async function initDatabase(): Promise<void> {
       id TEXT PRIMARY KEY,
       username TEXT UNIQUE NOT NULL,
       email TEXT UNIQUE NOT NULL,
+      phone TEXT,
       password_hash TEXT NOT NULL,
       full_name TEXT NOT NULL,
       role TEXT NOT NULL,
@@ -536,8 +539,11 @@ export async function initDatabase(): Promise<void> {
     ALTER TABLE members ALTER COLUMN occupation_type DROP NOT NULL;
     ALTER TABLE members ALTER COLUMN sector_id DROP NOT NULL;
     ALTER TABLE members ALTER COLUMN field_of_study_id DROP NOT NULL;
-    DELETE FROM woredas WHERE id IN ('wor-adama','wor-bishoftu','wor-shashemene','wor-arssi-negele','wor-jimma-town','wor-agaro','wor-ambo','wor-waliso','wor-asella','wor-bale-robe','wor-faydha','wor-dukem')
   `;
+
+  // Idempotent addition for existing installations.
+  try { await pool.query('ALTER TABLE admin_users ADD COLUMN IF NOT EXISTS phone TEXT'); }
+  catch (err: any) { console.warn(`[Database Migration Notice] ${err.message}`); }
 
   // Execute schema
   const statements = schemaSql
@@ -555,6 +561,13 @@ export async function initDatabase(): Promise<void> {
 
   // Execute versioned migrations
   await runAllMigrations(pool);
+
+  // This cleanup belongs after migrations because the woredas table is created by a versioned migration.
+  try {
+    await pool.query(`DELETE FROM woredas WHERE id IN ('wor-adama','wor-bishoftu','wor-shashemene','wor-arssi-negele','wor-jimma-town','wor-agaro','wor-ambo','wor-waliso','wor-asella','wor-bale-robe','wor-faydha','wor-dukem')`);
+  } catch (err: any) {
+    console.warn(`[Database Cleanup Notice] ${err.message}`);
+  }
 
   // Seed default data
   await seedInitialData(pool);
@@ -893,6 +906,7 @@ export const dbOperations = {
   // Members
   async getMembers(params: {
     q?: string;
+    ids?: string[];
     registrationStatus?: string;
     membershipStatus?: string;
     gender?: string;
@@ -921,6 +935,12 @@ export const dbOperations = {
       conditions.push(`(m.full_name ILIKE $${idx} OR m.phone ILIKE $${idx} OR m.email ILIKE $${idx} OR m.member_no ILIKE $${idx})`);
       values.push(`%${params.q.trim()}%`);
       idx++;
+    }
+    if (params.ids && params.ids.length) {
+      const placeholders = params.ids.map((_, i) => `$${idx + i}`);
+      conditions.push(`m.id IN (${placeholders.join(', ')})`);
+      values.push(...params.ids);
+      idx += params.ids.length;
     }
     if (params.registrationStatus) {
       conditions.push(`m.registration_status = $${idx}`);
@@ -966,7 +986,7 @@ export const dbOperations = {
       const now = new Date();
       const firstOfMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
       conditions.push(
-        `${params.paid ? '' : 'NOT '}EXISTS (SELECT 1 FROM payments p WHERE p.member_id = m.id AND p.status = 'paid' AND p.period_end >= $${idx})`
+        `m.id ${params.paid ? 'IN' : 'NOT IN'} (SELECT p.member_id FROM payments p WHERE p.status = 'paid' AND p.period_end >= $${idx})`
       );
       values.push(firstOfMonth);
       idx++;
@@ -1097,7 +1117,7 @@ export const dbOperations = {
         graduation_level_id, occupation_type, sector_id, field_of_study_id,
         professional_category, organization_name, job_title, region_id, town,
         id_type, id_number_hash, id_number_last4, registration_status, membership_status,
-        preferred_language, source, phone_verified_at, consent_at, created_at, updated_at
+        preferred_language, source, phone_verified_at, consent_at, created_at, updated_at, registration_details
       ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,
         $8,$9,$10,$11,$12,$13,
@@ -1106,7 +1126,7 @@ export const dbOperations = {
         $21,$22,$23,$24,
         $25,$26,$27,$28,$29,
         $30,$31,$32,$33,$34,
-        $35,$36,$37, NOW(), NOW(), NOW()
+        $35,$36,$37, NOW(), NOW(), NOW(), $38
       ) RETURNING *`,
       [
         data.id || crypto.randomUUID(),
@@ -1146,6 +1166,7 @@ export const dbOperations = {
         data.preferredLanguage || 'en',
         data.source || 'online',
         data.phoneVerifiedAt || null,
+        JSON.stringify(data.registrationDetails || {}),
       ]
     );
     return mapRow(res.rows[0]);
@@ -1439,6 +1460,59 @@ export const dbOperations = {
     return res.rows[0] ? mapRow(res.rows[0]) : null;
   },
 
+  async listSmsCampaigns(page = 1, pageSize = 10, regionId?: string) {
+    const safePage = Math.max(1, Math.floor(page || 1));
+    const safePageSize = Math.min(100, Math.max(1, Math.floor(pageSize || 10)));
+    const offset = (safePage - 1) * safePageSize;
+    const where = regionId ? " WHERE audience_filter->>'regionId' = $1" : '';
+    const values = regionId ? [regionId, safePageSize, offset] : [safePageSize, offset];
+    const limitIndex = regionId ? 2 : 1;
+    const offsetIndex = regionId ? 3 : 2;
+    const [rows, count] = await Promise.all([
+      query(`SELECT * FROM sms_campaigns${where} ORDER BY created_at DESC LIMIT $${limitIndex} OFFSET $${offsetIndex}`, values),
+      query(`SELECT COUNT(*)::int AS total FROM sms_campaigns${where}`, regionId ? [regionId] : []),
+    ]);
+    const total = Number(count.rows[0]?.total || 0);
+    return {
+      items: rows.rows.map((row: any) => {
+        const campaign = mapRow(row);
+        const totals = campaign.totals || {};
+        return {
+          ...campaign,
+          recipientCount: Number(totals.targetCount ?? campaign.recipientCount ?? 0),
+          sentCount: Number(totals.sentCount ?? campaign.sentCount ?? 0),
+          failedCount: Number(totals.failedCount ?? campaign.failedCount ?? 0),
+        };
+      }),
+      meta: { page: safePage, pageSize: safePageSize, total, totalPages: Math.max(1, Math.ceil(total / safePageSize)) },
+    };
+  },
+
+  async listSmsLogs(page = 1, pageSize = 10, regionId?: string) {
+    const safePage = Math.max(1, Math.floor(page || 1));
+    const safePageSize = Math.min(100, Math.max(1, Math.floor(pageSize || 10)));
+    const offset = (safePage - 1) * safePageSize;
+    const where = regionId ? ' WHERE m.region_id = $1' : '';
+    const values = regionId ? [regionId, safePageSize, offset] : [safePageSize, offset];
+    const limitIndex = regionId ? 2 : 1;
+    const offsetIndex = regionId ? 3 : 2;
+    const [rows, count] = await Promise.all([
+      query(
+        `SELECT l.id, l.phone AS recipient_phone, m.full_name AS recipient_name, l.message, l.status,
+                l.error AS error_message, l.sent_at, l.campaign_id
+         FROM sms_logs l LEFT JOIN members m ON m.id = l.member_id${where}
+         ORDER BY l.sent_at DESC LIMIT $${limitIndex} OFFSET $${offsetIndex}`,
+        values
+      ),
+      query(`SELECT COUNT(*)::int AS total FROM sms_logs l LEFT JOIN members m ON m.id = l.member_id${where}`, regionId ? [regionId] : []),
+    ]);
+    const total = Number(count.rows[0]?.total || 0);
+    return {
+      items: rows.rows.map(mapRow),
+      meta: { page: safePage, pageSize: safePageSize, total, totalPages: Math.max(1, Math.ceil(total / safePageSize)) },
+    };
+  },
+
   async updateSmsCampaignStatus(id: string, status: string, totals?: any) {
     if (totals) {
       await query('UPDATE sms_campaigns SET status = $1, totals = $2 WHERE id = $3', [status, JSON.stringify(totals), id]);
@@ -1466,7 +1540,7 @@ export const dbOperations = {
 
   async getDueScheduledSmsCampaigns() {
     const res = await query(
-      "SELECT * FROM sms_campaigns WHERE status = 'scheduled' AND scheduled_at <= NOW()"
+      "SELECT * FROM sms_campaigns WHERE status IN ('scheduled', 'waiting_for_provider') AND (scheduled_at IS NULL OR scheduled_at <= NOW())"
     );
     return res.rows.map(mapRow);
   },

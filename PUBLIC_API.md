@@ -331,7 +331,7 @@ table or change member status.
 ---
 
 ### 3.2 `POST /api/public/registrations/otp/send`
-Dispatches a 6-digit verification code to an Ethiopian phone number via AfroMessage.
+Dispatches a 6-digit verification code to an Ethiopian phone number via SMS provider.
 - Rate limits: Max 3 requests per phone per 10 minutes; 5 requests per minute per IP.
 
 #### Request

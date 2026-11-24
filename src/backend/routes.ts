@@ -6,6 +6,8 @@
 import { adminContentRouter } from './adminContentRoutes.js';
 import { toAdminUserDto, getLang, loadPaymentInfo, toMemberSummaryDto, toMemberDetailDto, normalizeMemberBody, toPaymentDto, toRecentActivityDto } from './adminDto.js';
 import express, { Request, Response } from 'express';
+import multer from 'multer';
+import ExcelJS from 'exceljs';
 import { createAsyncRouter } from './asyncRouter.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -13,6 +15,7 @@ import { z } from 'zod';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { Readable } from 'stream';
 
 import {
   authenticateJWT,
@@ -20,6 +23,7 @@ import {
   requireSuperAdmin,
   requirePermission,
   requireRegionScope,
+  requirePasswordChanged,
   customRateLimiter,
   validateBody,
   getJwtSecret,
@@ -28,15 +32,38 @@ import {
 import { query, mapRow, dbOperations, hashIdNumber } from './database.js';
 import { statsService } from '../services/statsService.js';
 import { emailService } from '../services/emailService.js';
-import { afroSmsService } from '../services/afroSmsService.js';
+import { smsService } from '../services/smsService.js';
 import { otpService } from '../services/otpService.js';
 import { exportService } from '../services/exportService.js';
 import { smsCampaignService } from '../services/smsCampaignService.js';
 import { translations, t } from '../translations.js';
-import { memberRegistrationUpload, calculateFileHash, PRIVATE_UPLOAD_PATH } from '../config/multer.js';
+import { PRIVATE_UPLOAD_PATH } from '../config/multer.js';
+import { DuplicateRegistrationError, RegistrationValidationError, validateRegistrationInput, processRegistrationFilesAndSave, type UploadedDoc } from '../services/public/registrationService.js';
 import { SupportedLanguage } from '../types.js';
 
 export const apiRouter = createAsyncRouter();
+const memberImportUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
+const registrationTempDir = path.join(PRIVATE_UPLOAD_PATH, 'temp');
+fs.mkdirSync(registrationTempDir, { recursive: true });
+const adminRegistrationUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, registrationTempDir),
+    filename: (_req, file, cb) => cb(null, `admin-${crypto.randomBytes(12).toString('hex')}${path.extname(file.originalname).toLowerCase()}`),
+  }),
+  limits: { fileSize: 5 * 1024 * 1024, files: 32, fields: 250 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowed = ['.pdf', '.jpg', '.jpeg', '.png'];
+    const mimeAllowed = ['application/pdf', 'image/jpeg', 'image/png'];
+    if (!allowed.includes(ext) || !mimeAllowed.includes(file.mimetype)) return cb(new Error('Invalid file type. Upload PDF, JPG, PNG or WEBP files only.'));
+    cb(null, true);
+  },
+}).fields([
+  { name: 'passportPhoto', maxCount: 1 }, { name: 'idDocument', maxCount: 1 },
+  { name: 'cvCompanyProfile', maxCount: 1 }, { name: 'academicCertificates', maxCount: 10 },
+  { name: 'professionalLicensesBusinessRegistration', maxCount: 10 }, { name: 'paymentProof', maxCount: 1 },
+  { name: 'credentialDocs', maxCount: 10 }, { name: 'credentials', maxCount: 10 },
+]);
 
 // Helper to normalize phone numbers to +2519... or +2517...
 function normalizeEthiopianPhone(phone: string): string {
@@ -206,13 +233,14 @@ apiRouter.post('/auth/logout', authenticateJWT, async (req: Request, res: Respon
    3. ADMIN: MEMBERS MANAGEMENT
    ========================================================================== */
 
-const adminAuthChain = [authenticateJWT, loadAdminContext];
+const adminAuthChain = [authenticateJWT, loadAdminContext, requirePasswordChanged];
 
 function memberFilters(req: Request) {
   const q = req.query;
   const s = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
   return {
     q: s(q.q),
+    ids: s(q.ids)?.split(',').map((id) => id.trim()).filter(Boolean).slice(0, 500),
     registrationStatus: s(q.registrationStatus),
     membershipStatus: s(q.membershipStatus),
     gender: s(q.gender),
@@ -236,6 +264,12 @@ async function memberDetail(id: string, lang: any) {
   if (!member) return null;
   const [docs, info] = await Promise.all([dbOperations.getMemberDocuments(id), loadPaymentInfo([id])]);
   return toMemberDetailDto(member, docs, lang, info[id]);
+}
+
+async function dispatchSmsAndLog(phone: string, message: string, memberId?: string | null) {
+  const result = await smsService.sendSms(phone, message);
+  await dbOperations.createSmsLog({ memberId: memberId || null, phone, message, status: result.status, providerMessageId: result.messageId, error: result.error });
+  return result;
 }
 
 function validateMemberBody(b: ReturnType<typeof normalizeMemberBody>, creating: boolean) {
@@ -284,10 +318,11 @@ apiRouter.get('/admin/registrations/pending-count', adminAuthChain, requirePermi
 // GET /admin/members/export  (must stay above /admin/members/:id)
 apiRouter.get('/admin/members/export', adminAuthChain, requirePermission('members.export'), requireRegionScope, async (req: Request, res: Response) => {
   const format = (req.query.format as string) === 'pdf' ? 'pdf' : 'xlsx';
-  const data = await dbOperations.getMembers({ ...memberFilters(req), pageSize: 100, page: 1 });
+  const filters = memberFilters(req);
+  const data = await dbOperations.getMembers({ ...filters, pageSize: 100, page: 1 });
   let items = data.items;
   for (let page = 2; page <= (data.meta?.totalPages || 1) && page <= 50; page++) {
-    const more = await dbOperations.getMembers({ ...memberFilters(req), pageSize: 100, page });
+    const more = await dbOperations.getMembers({ ...filters, pageSize: 100, page });
     items = items.concat(more.items);
   }
 
@@ -303,6 +338,138 @@ apiRouter.get('/admin/members/export', adminAuthChain, requirePermission('member
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename="ophea-members.xlsx"');
   return res.send(buffer);
+});
+
+// GET /admin/members/import/template
+apiRouter.get('/admin/members/import/template', adminAuthChain, requirePermission('members.edit'), async (_req: Request, res: Response) => {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Members');
+  sheet.columns = [
+    { header: 'fullName', key: 'fullName', width: 28 },
+    { header: 'phone', key: 'phone', width: 18 },
+    { header: 'email', key: 'email', width: 28 },
+    { header: 'gender', key: 'gender', width: 14 },
+    { header: 'graduationLevelId', key: 'graduationLevelId', width: 22 },
+    { header: 'occupationType', key: 'occupationType', width: 18 },
+    { header: 'sectorId', key: 'sectorId', width: 20 },
+    { header: 'fieldOfStudyId', key: 'fieldOfStudyId', width: 22 },
+    { header: 'regionId', key: 'regionId', width: 18 },
+    { header: 'idType', key: 'idType', width: 16 },
+    { header: 'idNumber', key: 'idNumber', width: 20 },
+    { header: 'membershipCategory', key: 'membershipCategory', width: 22 },
+    { header: 'nationality', key: 'nationality', width: 18 },
+    { header: 'dateOfBirth', key: 'dateOfBirth', width: 16 },
+    { header: 'organizationName', key: 'organizationName', width: 26 },
+    { header: 'jobTitle', key: 'jobTitle', width: 22 },
+    { header: 'town', key: 'town', width: 18 },
+    { header: 'preferredLanguage', key: 'preferredLanguage', width: 20 },
+  ];
+  sheet.addRow({ fullName: 'Example Member', phone: '+251911234567', email: 'member@example.com', gender: 'female', graduationLevelId: 'Use lookup ID', occupationType: 'private', sectorId: 'Use lookup ID', fieldOfStudyId: 'Use lookup ID', regionId: 'Use region ID', idType: 'fayda', idNumber: 'ID-EXAMPLE-001', membershipCategory: 'Professional', nationality: 'Ethiopian', dateOfBirth: '1990-01-01', organizationName: 'Example Organization', jobTitle: 'Manager', town: 'Addis Ababa', preferredLanguage: 'en' });
+  sheet.getRow(1).font = { bold: true };
+  const buffer = await workbook.xlsx.writeBuffer();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="ophea-member-import-template.xlsx"');
+  return res.send(Buffer.from(buffer));
+});
+
+// POST /admin/members/import - imports valid rows as pending members; invalid/duplicate rows are reported.
+apiRouter.post('/admin/members/import', adminAuthChain, requirePermission('members.edit'), requireRegionScope, memberImportUpload.single('file'), async (req: Request, res: Response) => {
+  if (!req.file) return res.status(400).json({ success: false, error: 'Choose an Excel (.xlsx) or CSV file.' });
+  const name = req.file.originalname.toLowerCase();
+  if (!name.endsWith('.xlsx') && !name.endsWith('.csv')) return res.status(400).json({ success: false, error: 'Only .xlsx and .csv files are supported.' });
+
+  const workbook = new ExcelJS.Workbook();
+  if (name.endsWith('.csv')) await workbook.csv.read(Readable.from([req.file.buffer]));
+  else await workbook.xlsx.load(req.file.buffer);
+  const sheet = workbook.worksheets[0];
+  if (!sheet || sheet.rowCount < 2) return res.status(400).json({ success: false, error: 'The import file has no member rows.' });
+  if (sheet.rowCount > 1001) return res.status(400).json({ success: false, error: 'Import files are limited to 1,000 member rows per upload.' });
+
+  const headers: string[] = [];
+  sheet.getRow(1).eachCell((cell, col) => { headers[col] = String(cell.value ?? '').trim(); });
+  const results: Array<{ row: number; name?: string; status: string; message: string }> = [];
+  let imported = 0;
+  for (let rowNo = 2; rowNo <= sheet.rowCount; rowNo++) {
+    const row = sheet.getRow(rowNo);
+    const raw: Record<string, any> = {};
+    row.eachCell((cell, col) => {
+      const key = headers[col];
+      if (key) raw[key] = cell.value instanceof Date ? cell.value.toISOString().slice(0, 10) : cell.value && typeof cell.value === 'object' && 'text' in (cell.value as any) ? (cell.value as any).text : cell.value;
+    });
+    if (!Object.values(raw).some((v) => String(v ?? '').trim())) continue;
+    const b = normalizeMemberBody(raw);
+    if (b.gender) b.gender = b.gender.toLowerCase();
+    if (b.occupationType) b.occupationType = b.occupationType.toLowerCase();
+    if (b.idType) b.idType = b.idType.toLowerCase();
+    if (req.admin?.role === 'RegionalAdmin') b.regionId = req.admin.regionId || b.regionId;
+    const errors = validateMemberBody(b, true);
+    if (Object.keys(errors).length) {
+      results.push({ row: rowNo, name: b.fullName, status: 'invalid', message: Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join('; ') });
+      continue;
+    }
+    const phone = normalizeEthiopianPhone(b.phone!);
+    const duplicate = await dbOperations.checkDuplicateMember(phone, b.email!, b.idType!, b.idNumber!);
+    if (duplicate) {
+      results.push({ row: rowNo, name: b.fullName, status: 'duplicate', message: 'A member with this phone, email or ID number already exists.' });
+      continue;
+    }
+    try {
+      await dbOperations.createMember({
+        memberNo: await dbOperations.getNextMemberNumber(), ...b, phone,
+        idNumberHash: hashIdNumber(b.idType!, b.idNumber!), idNumberLast4: b.idNumber!.slice(-4),
+        registrationStatus: 'pending', membershipStatus: 'pending', source: 'admin_import',
+        registrationDetails: { importedFields: raw, importRow: rowNo },
+      });
+      imported += 1;
+      results.push({ row: rowNo, name: b.fullName, status: 'imported', message: 'Created as pending review.' });
+    } catch (error) {
+      results.push({ row: rowNo, name: b.fullName, status: 'failed', message: error instanceof Error ? error.message : 'Database insert failed.' });
+    }
+  }
+  await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'member.bulk_import', entity: 'members', ip: req.ip, after: { imported, totalRows: results.length } });
+  return res.json({ success: true, data: { imported, total: results.length, results } });
+});
+
+// POST /admin/members/registration - same full registration payload and documents as the public form.
+apiRouter.post('/admin/members/registration', adminAuthChain, requirePermission('members.edit'), requireRegionScope, adminRegistrationUpload, async (req: Request, res: Response) => {
+  const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+  const idDocFile = files?.idDocument?.[0];
+  const extraDocs: UploadedDoc[] = [
+    ...(files?.passportPhoto || []).map((file) => ({ file, kind: 'credential' as const, category: 'passportPhoto' })),
+    ...(files?.credentialDocs || []).map((file) => ({ file, kind: 'credential' as const, category: 'credential' })),
+    ...(files?.credentials || []).map((file) => ({ file, kind: 'credential' as const, category: 'credential' })),
+    ...(files?.academicCertificates || []).map((file) => ({ file, kind: 'credential' as const, category: 'academicCertificate' })),
+    ...(files?.professionalLicensesBusinessRegistration || []).map((file) => ({ file, kind: 'credential' as const, category: 'professionalLicenseOrBusinessRegistration' })),
+    ...(files?.paymentProof || []).map((file) => ({ file, kind: 'credential' as const, category: 'paymentProof' })),
+    ...(files?.cvCompanyProfile || []).map((file) => ({ file, kind: 'cv' as const, category: 'cvCompanyProfile' })),
+  ];
+  const discardUploads = () => { for (const list of Object.values(files || {})) for (const file of list) if (file.path && fs.existsSync(file.path)) fs.rmSync(file.path, { force: true }); };
+  try {
+    if (req.admin?.role === 'RegionalAdmin') req.body.regionId = req.admin.regionId || req.body.regionId;
+    if (typeof req.body.officialFormData === 'string') {
+      const parsed = JSON.parse(req.body.officialFormData);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('officialFormData must be a JSON object');
+      req.body.officialFormData = parsed;
+    }
+    for (const key of ['education', 'certifications', 'experience', 'language', 'languagesKnown', 'areasOfExpertise', 'areasOfInterest']) {
+      if (typeof req.body[key] === 'string') {
+        try { req.body[key] = JSON.parse(req.body[key]); } catch { /* retain plain text where supported */ }
+      }
+    }
+    if (req.body.gender) req.body.gender = String(req.body.gender).toLowerCase();
+    const validation = validateRegistrationInput(req.body, idDocFile, extraDocs);
+    if (!validation.isValid) { discardUploads(); return res.status(400).json({ success: false, error: 'Please fix the registration form errors', fields: validation.fields }); }
+    const created = await processRegistrationFilesAndSave(req.body, idDocFile!, extraDocs, { source: 'admin', requireOtp: false });
+    // Preserve the existing admin-created-member behavior: admin-created records are approved immediately.
+    await dbOperations.approveMember(created.memberId, req.admin?.fullName || 'Admin');
+    await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'member.create_admin_full_registration', entity: 'members', entityId: created.memberId, ip: req.ip });
+    return res.status(201).json({ success: true, data: await memberDetail(created.memberId, getLang(req)) });
+  } catch (error: any) {
+    discardUploads();
+    if (error instanceof RegistrationValidationError) return res.status(400).json({ success: false, error: error.message, fields: error.fields });
+    if (error instanceof DuplicateRegistrationError) return res.status(409).json({ success: false, error: error.message, fields: { phone: 'Possible duplicate' } });
+    return res.status(400).json({ success: false, error: error?.message || 'Could not create member registration' });
+  }
 });
 
 // POST /admin/members (admin creates an approved member directly)
@@ -329,6 +496,7 @@ apiRouter.post('/admin/members', adminAuthChain, requirePermission('members.edit
     registrationStatus: 'pending',
     membershipStatus: 'pending',
     source: 'admin',
+    registrationDetails: req.body.registrationDetails || req.body.officialFormData || {},
   });
   await dbOperations.approveMember(created.id, req.admin!.fullName);
   await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'member.create_admin', entity: 'members', entityId: created.id, ip: req.ip });
@@ -466,7 +634,7 @@ apiRouter.post('/admin/members/:id/approve', adminAuthChain, requirePermission('
 
   emailService.sendApprovalEmail(approved.email, approved.fullName, approved.memberNo, approved.preferredLanguage);
   if (process.env.FEATURE_SMS === 'true') {
-    afroSmsService.sendSms(approved.phone, `OPHEA: Congratulations ${approved.fullName}! Your membership application (#${approved.memberNo}) is approved.`);
+    await dispatchSmsAndLog(approved.phone, `OPHEA: Congratulations ${approved.fullName}! Your membership application (#${approved.memberNo}) is approved.`, approved.id);
   }
   return res.json({ success: true, data: await memberDetail(req.params.id, getLang(req)) });
 });
@@ -627,9 +795,9 @@ async function findUnpaidMembers(period: string, dateStr: string, regionId?: str
      LEFT JOIN lookup_graduation_levels g ON m.graduation_level_id = g.id
      WHERE m.registration_status = 'approved' AND m.membership_status = 'active'
      ${regionCond}
-     AND NOT EXISTS (
-       SELECT 1 FROM payments p
-       WHERE p.member_id = m.id AND p.status = 'paid' AND p.period_start <= $2 AND p.period_end >= $1
+     AND m.id NOT IN (
+       SELECT p.member_id FROM payments p
+       WHERE p.status = 'paid' AND p.period_start <= $2 AND p.period_end >= $1
      )
      ORDER BY m.full_name ASC
      LIMIT 1000`,
@@ -697,14 +865,14 @@ apiRouter.post('/admin/payments/reminders', adminAuthChain, requirePermission('s
   let queued = 0;
   for (const m of unpaid) {
     try {
-      await afroSmsService.sendSms(m.phone, `OPHEA: Dear ${m.fullName}, your ${period} contribution is due. Please pay at your earliest convenience. Thank you.`);
-      queued++;
+      const delivery = await dispatchSmsAndLog(m.phone, `OPHEA: Dear ${m.fullName}, your ${period} contribution is due. Please pay at your earliest convenience. Thank you.`, m.id);
+      if (delivery.success) queued++;
     } catch {
       /* continue with remaining members */
     }
   }
   await dbOperations.createAuditLog({ adminId: req.admin?.id, action: 'payment.reminders', entity: 'payments', after: { period, date, queued }, ip: req.ip });
-  return res.json({ success: true, data: { queuedCount: queued } });
+  return res.json({ success: true, data: { queuedCount: queued, providerConfigured: smsService.getStatus().configured }, message: smsService.isEnabled() ? 'Reminder dispatch completed.' : 'No messages were sent because an SMS provider is not configured.' });
 });
 
 // POST /admin/payments
@@ -756,7 +924,7 @@ apiRouter.post('/admin/payments', adminAuthChain, requirePermission('payments.re
 
   emailService.sendReceiptEmail(member.email, member.fullName, payment.receiptNo, payment.amountEtb, payment.period);
   if (process.env.FEATURE_SMS === 'true') {
-    afroSmsService.sendSms(member.phone, `OPHEA: Received ${payment.amountEtb} ETB contribution from ${member.fullName}. Receipt #${payment.receiptNo}. Thank you!`);
+    await dispatchSmsAndLog(member.phone, `OPHEA: Received ${payment.amountEtb} ETB contribution from ${member.fullName}. Receipt #${payment.receiptNo}. Thank you!`, member.id);
   }
 
   const full = await dbOperations.getPaymentById(payment.id);
@@ -824,39 +992,52 @@ apiRouter.post('/admin/sms/send', adminAuthChain, requirePermission('sms'), asyn
   const { memberId, phone, message } = req.body;
   let targetPhone = phone;
 
-  if (memberId && !targetPhone) {
+  if (memberId) {
     const mem = await dbOperations.getMemberById(memberId);
-    if (mem) targetPhone = mem.phone;
+    if (!mem) return res.status(404).json({ success: false, error: 'Member not found.' });
+    if (req.admin?.role === 'RegionalAdmin' && mem.regionId !== req.admin.regionId) return res.status(403).json({ success: false, error: 'Member is outside your regional jurisdiction.' });
+    if (!targetPhone) targetPhone = mem.phone;
   }
 
   if (!targetPhone || !message) {
     return res.status(400).json({ success: false, error: 'Recipient phone number and message are required.' });
   }
 
-  const result = await afroSmsService.sendSms(targetPhone, message);
-  await dbOperations.createSmsLog({
-    memberId: memberId || null,
-    phone: targetPhone,
-    message,
-    status: result.success ? 'sent' : 'failed',
-    providerMessageId: result.messageId,
-    error: result.error,
-  });
+  const result = await dispatchSmsAndLog(targetPhone, message, memberId || null);
+  return res.status(result.success ? 200 : 503).json({ success: result.success, status: result.status, messageId: result.messageId, error: result.error });
+});
 
-  return res.json({ success: result.success, messageId: result.messageId, error: result.error });
+// GET /admin/sms/campaigns
+apiRouter.get('/admin/sms/campaigns', adminAuthChain, requirePermission('sms'), requireRegionScope, async (req: Request, res: Response) => {
+  const page = Number.parseInt(String(req.query.page || '1'), 10) || 1;
+  const pageSize = Number.parseInt(String(req.query.pageSize || '10'), 10) || 10;
+  const regionId = typeof req.query.regionId === 'string' ? req.query.regionId : undefined;
+  const result = await dbOperations.listSmsCampaigns(page, pageSize, regionId);
+  return res.json({ success: true, data: result.items, meta: result.meta });
+});
+
+// GET /admin/sms/logs
+apiRouter.get('/admin/sms/logs', adminAuthChain, requirePermission('sms'), requireRegionScope, async (req: Request, res: Response) => {
+  const page = Number.parseInt(String(req.query.page || '1'), 10) || 1;
+  const pageSize = Number.parseInt(String(req.query.pageSize || '10'), 10) || 10;
+  const regionId = typeof req.query.regionId === 'string' ? req.query.regionId : undefined;
+  const result = await dbOperations.listSmsLogs(page, pageSize, regionId);
+  return res.json({ success: true, data: result.items, meta: result.meta });
 });
 
 // POST /admin/sms/campaigns
-apiRouter.post('/admin/sms/campaigns', adminAuthChain, requirePermission('sms'), async (req: Request, res: Response) => {
+apiRouter.post('/admin/sms/campaigns', adminAuthChain, requirePermission('sms'), requireRegionScope, async (req: Request, res: Response) => {
   const { name, message, audienceFilter, scheduledAt } = req.body;
   if (!name || !message) {
     return res.status(400).json({ success: false, error: 'Campaign name and message template are required.' });
   }
 
+  const safeAudienceFilter = { ...(audienceFilter || {}) };
+  if (req.admin?.role === 'RegionalAdmin') safeAudienceFilter.regionId = req.admin.regionId;
   const campaign = await smsCampaignService.createCampaign({
     name,
     message,
-    audienceFilter: audienceFilter || {},
+    audienceFilter: safeAudienceFilter,
     scheduledAt,
     createdBy: req.admin?.fullName || 'Admin',
   });
@@ -865,10 +1046,17 @@ apiRouter.post('/admin/sms/campaigns', adminAuthChain, requirePermission('sms'),
 });
 
 // GET /admin/sms/balance
-apiRouter.get('/admin/sms/balance', adminAuthChain, requirePermission('sms'), async (req: Request, res: Response) => {
-  const bal: any = await afroSmsService.getBalance();
-  const n = typeof bal === 'number' ? bal : Number(bal?.balance ?? 0);
-  return res.json({ success: true, data: { balance: Number.isFinite(n) ? n : 0 } });
+apiRouter.get('/admin/sms/status', adminAuthChain, requirePermission('sms'), async (_req: Request, res: Response) => {
+  return res.json({ success: true, data: smsService.getStatus() });
+});
+
+apiRouter.get('/admin/sms/templates', adminAuthChain, requirePermission('sms'), async (_req: Request, res: Response) => {
+  return res.json({ success: true, data: smsService.getTemplates() });
+});
+
+// Backward-compatible endpoint name; it now reports provider readiness, never a fabricated balance.
+apiRouter.get('/admin/sms/balance', adminAuthChain, requirePermission('sms'), async (_req: Request, res: Response) => {
+  return res.json({ success: true, data: smsService.getStatus() });
 });
 
 apiRouter.use(adminContentRouter);

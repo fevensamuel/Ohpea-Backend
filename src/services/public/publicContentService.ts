@@ -4,7 +4,8 @@ import { readSetting } from '../../backend/adminContentRoutes.js';
 export async function getPublicSiteSettings() {
   const [branding, contact, socials] = await Promise.all([readSetting('branding'), readSetting('contact'), readSetting('socials')]);
   const i18n = (en: string, om = '') => ({ en, om, am: '' });
-  const socialLinks = Object.fromEntries(Object.entries(socials).filter(([, v]) => typeof v === 'string' && v.trim() !== ''));
+  const socialLinks = Array.isArray(socials) ? socials.filter((item: any) => item.enabled && /^https?:\/\//i.test(item.url || '')).sort((a: any,b: any) => a.sortOrder - b.sortOrder) : Object.entries(socials).filter(([, v]) => typeof v === 'string' && v.trim() !== '').map(([platform,url]) => ({ id: platform, platform, label: platform, url, enabled: true }));
+  const socialMap = Object.fromEntries(socialLinks.map((item: any) => [item.platform, item.url]));
   const phones = [contact.phonePrimary, contact.phoneSecondary, branding.supportPhone].filter((p: string, i: number, a: string[]) => p && a.indexOf(p) === i);
   const emails = [contact.emailGeneral, contact.emailSupport, branding.supportEmail].filter((e: string, i: number, a: string[]) => e && a.indexOf(e) === i);
   const coords = String(contact.mapCoordinates || '').trim();
@@ -23,12 +24,13 @@ export async function getPublicSiteSettings() {
     mapLink,
     workingHours: contact.workingHours,
     socialLinks,
+    socials: socialLinks,
+    social: socialMap,
     // convenience aliases (empty when not configured; nothing is invented)
     name: branding.orgName,
     email: emails[0] || '',
     phone: phones[0] || '',
     hotlines: phones,
-    social: socialLinks,
   };
 }
 

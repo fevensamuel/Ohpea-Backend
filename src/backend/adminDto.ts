@@ -127,6 +127,7 @@ export function toAdminUserDto(row: any, lang: Lang = 'en') {
     id: row.id,
     fullName: row.fullName,
     email: row.email,
+    phone: row.phone || '',
     username: row.username,
     role: row.role,
     regionId: row.regionId || undefined,
@@ -509,7 +510,7 @@ export function toSmsCampaignDto(row: any) {
 }
 
 export function toSmsLogDto(row: any) {
-  const status = row.status === 'delivered' || row.status === 'failed' ? row.status : 'sent';
+  const status = ['delivered', 'sent', 'failed', 'not_configured', 'queued'].includes(row.status) ? row.status : 'unknown';
   return {
     id: row.id,
     recipientPhone: row.phone,

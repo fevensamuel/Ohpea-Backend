@@ -26,6 +26,7 @@ import {
   type UploadedDoc,
 } from '../services/public/registrationService.js';
 import { normalizeEthiopianPhone } from '../utils/phone.js';
+import { translations } from '../translations.js';
 import { readSetting } from '../backend/adminContentRoutes.js';
 import {
   sendRegistrationOtp,
@@ -247,6 +248,36 @@ publicRouter.get('/lookups/regions', async (req: Request, res: Response) => {
 /* GET /api/public/config */
 publicRouter.get('/config', (_req: Request, res: Response) => {
   return success(res, { phoneOtpRequired: isPhoneOtpRequired() });
+});
+
+/* GET /api/public/translations/:lang */
+publicRouter.get('/translations/:lang', (req: Request, res: Response) => {
+  const lang = req.params.lang as keyof typeof translations;
+  const dictionary = translations[lang];
+  if (!dictionary) return fail(res, 'Unsupported language', 404);
+  return success(res, dictionary);
+});
+
+/* GET /api/public/lookups - combined lookup payload for clients that request it */
+publicRouter.get('/lookups', async (_req: Request, res: Response) => {
+  try {
+    const [regions, graduationLevels, fields, sectors, occupations] = await Promise.all([
+      getPublicRegionsWithWoredas(),
+      query('SELECT id, code, label FROM lookup_graduation_levels WHERE is_active = true ORDER BY sort_order ASC'),
+      query('SELECT id, code, label FROM lookup_fields_of_study WHERE is_active = true ORDER BY sort_order ASC'),
+      query('SELECT id, code, label FROM lookup_sectors WHERE is_active = true ORDER BY sort_order ASC'),
+      query('SELECT id, code, label FROM lookup_occupation_types WHERE is_active = true ORDER BY sort_order ASC'),
+    ]);
+    return success(res, {
+      regions,
+      graduationLevels: graduationLevels.rows,
+      fields: fields.rows,
+      sectors: sectors.rows,
+      occupations: occupations.rows,
+    });
+  } catch (err: any) {
+    return fail(res, err.message || 'Could not load lookup data', 500);
+  }
 });
 
 /* GET /api/public/objectives?kind= */

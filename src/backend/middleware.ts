@@ -77,6 +77,19 @@ export async function loadAdminContext(req: Request, res: Response, next: NextFu
   }
 }
 
+
+/** Block all administrative operations until a first-login/reset password is changed. */
+export function requirePasswordChanged(req: Request, res: Response, next: NextFunction) {
+  if (req.admin?.mustChangePassword) {
+    return res.status(403).json({
+      success: false,
+      error: 'Password change required before accessing the administration portal',
+      code: 'PASSWORD_CHANGE_REQUIRED',
+    });
+  }
+  next();
+}
+
 /**
  * Enforce SuperAdmin role
  */

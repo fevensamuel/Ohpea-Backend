@@ -413,7 +413,7 @@ window.open(receiptUrl, '_blank');
 const unpaidList = await api.getUnpaidMembers('monthly', '2026-11-01');
 ```
 
-### 5.6 Bulk SMS Campaigns (AfroMessage Integration)
+### 5.6 Bulk SMS Campaigns (SMS provider Integration)
 ```typescript
 // 1. Send Single SMS
 await api.sendSms({
@@ -509,7 +509,7 @@ const balance = await api.getSmsBalance();
 | `POST` | `/api/admin/sms/send` | Send Single SMS | Bearer JWT (`sms`) |
 | `POST` | `/api/admin/sms/campaigns` | Create & Schedule Bulk Campaign | Bearer JWT (`sms`) |
 | `GET` | `/api/admin/sms/campaigns` | List Campaigns & Delivery Status | Bearer JWT (`sms`) |
-| `GET` | `/api/admin/sms/balance` | Query AfroMessage Balance | Bearer JWT (`sms`) |
+| `GET` | `/api/admin/sms/balance` | Query SMS provider Balance | Bearer JWT (`sms`) |
 | `GET` | `/api/admin/meta/permissions` | Available Permissions Matrix | SuperAdmin Only |
 | `GET/POST`| `/api/admin/users` | Admin User Accounts | SuperAdmin Only |
 | `PATCH` | `/api/admin/users/:id/active` | Activate / Deactivate Admin User | SuperAdmin Only |

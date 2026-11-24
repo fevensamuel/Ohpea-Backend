@@ -6,6 +6,12 @@ import type { Pool } from 'pg';
  * and newsletter_subscribers.language after cleaning up existing rows.
  */
 export async function up(pool: Pool | any): Promise<void> {
+  // pg-mem's SQL parser cannot execute UPDATE ... NOT IN ... OR IS NULL reliably.
+  // Keep CHECK constraints enabled on real PostgreSQL; preview mode uses API validation.
+  if (pool?.__isInMemoryFallback === true) {
+    console.log('[Migration] Skipping PostgreSQL CHECK constraints in embedded preview database.');
+    return;
+  }
   // 1. Clean up registrations.id_type and add constraint
   try {
     await pool.query(`

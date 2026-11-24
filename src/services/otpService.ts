@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { emailService } from './emailService.js';
-import { afroSmsService } from './afroSmsService.js';
+import { smsService } from './smsService.js';
 import { SupportedLanguage } from '../types.js';
 
 const OTP_TTL_MINUTES = parseInt(process.env.OTP_TTL_MINUTES || '10', 10);
@@ -82,8 +82,8 @@ export class OtpService {
     await emailService.sendOtpEmail(normalizedEmail, code, OTP_TTL_MINUTES, lang);
 
     // If phone is provided and SMS feature is enabled, dispatch SMS
-    if (phone && process.env.FEATURE_SMS === 'true') {
-      await afroSmsService.sendSms(phone, `OPHEA: Your verification code is ${code}. Valid for ${OTP_TTL_MINUTES} min.`);
+    if (phone && process.env.FEATURE_SMS === 'true' && smsService.isEnabled()) {
+      await smsService.sendSms(phone, `OPHEA: Your verification code is ${code}. Valid for ${OTP_TTL_MINUTES} min.`);
     }
 
     return { success: true };
