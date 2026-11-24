@@ -81,11 +81,14 @@ app.use(
   })
 );
 
+// Association branding assets for browser tabs and API documentation.
+app.get('/favicon.png', (_req: Request, res: Response) => res.sendFile(path.resolve('public/favicon.png')));
+
 // Root endpoint: strictly small JSON object
 app.get('/', (_req: Request, res: Response) => {
   return res.json({
     success: true,
-    name: 'OPHEA API',
+    name: 'OHPEA API',
     version: '1.0.0',
   });
 });
@@ -125,8 +128,9 @@ app.use(
   '/api-docs',
   swaggerUi.serve,
   swaggerUi.setup(openApiSpec, {
-    customSiteTitle: 'OPHEA REST API Documentation & Explorer',
-    customCss: '.swagger-ui .topbar { background-color: #166534; }',
+    customSiteTitle: 'OHPEA | API Documentation & Explorer',
+    customfavIcon: '/favicon.png',
+    customCss: '.swagger-ui .topbar { background-color: #07583d; } .swagger-ui .topbar-wrapper .link:after { content: \"OHPEA API\"; color: #fff; font-weight: 700; margin-left: 12px; }',
     swaggerOptions: {
       defaultModelExpandDepth: 3,
       docExpansion: 'list',
@@ -159,7 +163,7 @@ if (process.env.FEATURE_SMS === 'true') {
 app.use((req: Request, res: Response) => {
   res.status(404).json({
     success: false,
-    error: `Endpoint '${req.originalUrl}' not found on OPHEA API`,
+    error: `Endpoint '${req.originalUrl}' not found on OHPEA API`,
   });
 });
 
@@ -179,7 +183,7 @@ async function startServer() {
 
     const serverInstance = app.listen(PORT, '0.0.0.0', () => {
       console.log(`================================================================`);
-      console.log(`  OPHEA Headless Backend API running on http://0.0.0.0:${PORT}`);
+      console.log(`  OHPEA Headless Backend API running on http://0.0.0.0:${PORT}`);
       console.log(`  Swagger UI:    http://localhost:${PORT}/api-docs`);
       console.log(`  OpenAPI JSON:  http://localhost:${PORT}/api-docs/openapi.json`);
       console.log(`  Health Check:  http://localhost:${PORT}/health`);

@@ -6,12 +6,12 @@
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
-    title: 'OPHEA REST API Backend',
+    title: 'OHPEA REST API Backend',
     version: '1.0.0',
     description:
-      'Headless REST API backend for the Oromia Hospitality & Tourism Professionals Association (OPHEA). Powers the public registration & information website and the administrative member-management portal.',
+      'Headless REST API backend for the Oromia Hospitality Professionals and Entrepreneurs Association (OHPEA). Powers the public registration & information website and the administrative member-management portal.',
     contact: {
-      name: 'OPHEA Technical Administration',
+      name: 'OHPEA Technical Administration',
       email: 'support@ophea.org',
     },
   },
